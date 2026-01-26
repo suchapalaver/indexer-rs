@@ -88,7 +88,7 @@ BEGIN
         PERFORM pg_notify('scalar_tap_deny_notification', format('{"tg_op": "INSERT", "sender_address": "%s"}', NEW.sender_address));
         RETURN NEW;
     ELSE
-        PERFORM pg_notify('scalar_tap_deny_notification', format('{"tg_op": "%s", "sender_address": null}', TG_OP, NEW.sender_address));
+        PERFORM pg_notify('scalar_tap_deny_notification', format('{"tg_op": "%s", "sender_address": "%s"}', TG_OP, NEW.sender_address));
         RETURN NEW;
     END IF;
 END;
@@ -229,7 +229,7 @@ BEGIN
         PERFORM pg_notify('cost_models_update_notification', format('{"tg_op": "INSERT", "deployment": "%s", "model": "%s", "variables": "%s"}', NEW.deployment, NEW.model, NEW.variables));
         RETURN NEW;
     ELSE
-        PERFORM pg_notify('cost_models_update_notification', format('{"tg_op": "%s", "deployment": "%s", "model": "%s", "variables": "%s" }', NEW.deployment, NEW.model, NEW.variables));
+        PERFORM pg_notify('cost_models_update_notification', format('{"tg_op": "%s", "deployment": "%s", "model": "%s", "variables": "%s"}', TG_OP, NEW.deployment, NEW.model, NEW.variables));
         RETURN NEW;
     END IF;
 END;
@@ -336,7 +336,7 @@ BEGIN
         PERFORM pg_notify('tap_horizon_deny_notification', format('{"tg_op": "INSERT", "sender_address": "%s"}', NEW.sender_address));
         RETURN NEW;
     ELSE
-        PERFORM pg_notify('tap_horizon_deny_notification', format('{"tg_op": "%s", "sender_address": null}', TG_OP, NEW.sender_address));
+        PERFORM pg_notify('tap_horizon_deny_notification', format('{"tg_op": "%s", "sender_address": "%s"}', TG_OP, NEW.sender_address));
         RETURN NEW;
     END IF;
 END;

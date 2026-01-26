@@ -64,16 +64,17 @@ pub struct POIDisputeInput {
     pub protocol_network: String,
 }
 
-impl From<POIDisputeInput> for AgentPOIDisputeInput {
-    fn from(input: POIDisputeInput) -> Self {
-        Self {
+impl TryFrom<POIDisputeInput> for AgentPOIDisputeInput {
+    type Error = anyhow::Error;
+
+    fn try_from(input: POIDisputeInput) -> Result<Self, Self::Error> {
+        Ok(Self {
             allocation_id: input.allocation_id,
             subgraph_deployment_id: input.subgraph_deployment_id,
             allocation_indexer: input.allocation_indexer,
-            allocation_amount: input
-                .allocation_amount
-                .parse()
-                .expect("Invalid allocation amount"),
+            allocation_amount: input.allocation_amount.parse().map_err(|_| {
+                anyhow::anyhow!("Invalid allocation amount: must be a valid decimal")
+            })?,
             allocation_proof: input.allocation_proof,
             closed_epoch: input.closed_epoch,
             closed_epoch_reference_proof: input.closed_epoch_reference_proof,
@@ -84,7 +85,7 @@ impl From<POIDisputeInput> for AgentPOIDisputeInput {
             previous_epoch_start_block_number: input.previous_epoch_start_block_number,
             status: input.status,
             protocol_network: input.protocol_network,
-        }
+        })
     }
 }
 
@@ -134,7 +135,10 @@ impl POIDisputeMutation {
         disputes: Vec<POIDisputeInput>,
     ) -> Result<Vec<POIDispute>, anyhow::Error> {
         let pool = ctx.data_unchecked::<PgPool>();
-        let inputs: Vec<AgentPOIDisputeInput> = disputes.into_iter().map(Into::into).collect();
+        let inputs: Vec<AgentPOIDisputeInput> = disputes
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<_>, _>>()?;
         let results = AgentPOIDispute::store(pool, &inputs).await?;
         Ok(results.into_iter().map(Into::into).collect())
     }

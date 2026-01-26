@@ -19,12 +19,12 @@ The `20260126000000_baseline` migration consolidates all tables:
 
 ### Legacy (V1) TAP Tables
 
-The baseline migration **removes** Legacy V1 TAP tables:
+The baseline migration **preserves** Legacy V1 TAP tables for backwards compatibility:
 - `scalar_tap_receipts` / `scalar_tap_receipts_invalid`
 - `scalar_tap_ravs` / `scalar_tap_rav_requests_failed`
 - `scalar_tap_denylist`
 
-**Important:** Ensure all V1 receipts have been processed into RAVs and redeemed before upgrading.
+These tables will be removed in a future migration once V1 code is fully deprecated.
 
 ## Operator Migration Guide
 
@@ -57,7 +57,7 @@ No special steps needed. Start indexer-service-rs and migrations run automatical
    The service will automatically:
    - Run the baseline migration
    - Create agent tables if they don't exist
-   - Drop Legacy V1 tables
+   - Preserve Legacy V1 tables (will be removed in a future release)
 
 5. **Verify migration success**
    ```sql

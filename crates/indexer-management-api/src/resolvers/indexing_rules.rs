@@ -119,34 +119,45 @@ pub struct IndexingRuleInput {
     pub protocol_network: String,
 }
 
-fn parse_decimal(s: Option<String>) -> Option<BigDecimal> {
-    s.and_then(|v| v.parse().ok())
+fn parse_decimal(s: Option<String>, field_name: &str) -> Result<Option<BigDecimal>, anyhow::Error> {
+    match s {
+        Some(v) => v
+            .parse()
+            .map(Some)
+            .map_err(|_| anyhow::anyhow!("Invalid {field_name}: must be a valid decimal")),
+        None => Ok(None),
+    }
 }
 
-impl From<IndexingRuleInput> for AgentIndexingRuleInput {
-    fn from(input: IndexingRuleInput) -> Self {
-        Self {
+impl TryFrom<IndexingRuleInput> for AgentIndexingRuleInput {
+    type Error = anyhow::Error;
+
+    fn try_from(input: IndexingRuleInput) -> Result<Self, Self::Error> {
+        Ok(Self {
             identifier: input.identifier,
             identifier_type: input.identifier_type.map(|t| match t {
                 IdentifierType::Deployment => AgentIdentifierType::Deployment,
                 IdentifierType::Subgraph => AgentIdentifierType::Subgraph,
                 IdentifierType::Group => AgentIdentifierType::Group,
             }),
-            allocation_amount: parse_decimal(input.allocation_amount),
+            allocation_amount: parse_decimal(input.allocation_amount, "allocation_amount")?,
             allocation_lifetime: input.allocation_lifetime,
             auto_renewal: input.auto_renewal,
             parallel_allocations: input.parallel_allocations,
             max_allocation_percentage: input.max_allocation_percentage,
-            min_signal: parse_decimal(input.min_signal),
-            max_signal: parse_decimal(input.max_signal),
-            min_stake: parse_decimal(input.min_stake),
-            min_average_query_fees: parse_decimal(input.min_average_query_fees),
+            min_signal: parse_decimal(input.min_signal, "min_signal")?,
+            max_signal: parse_decimal(input.max_signal, "max_signal")?,
+            min_stake: parse_decimal(input.min_stake, "min_stake")?,
+            min_average_query_fees: parse_decimal(
+                input.min_average_query_fees,
+                "min_average_query_fees",
+            )?,
             custom: input.custom,
             decision_basis: input.decision_basis.map(Into::into),
             require_supported: input.require_supported,
             safety: input.safety,
             protocol_network: input.protocol_network,
-        }
+        })
     }
 }
 
@@ -172,15 +183,9 @@ impl IndexingRuleQuery {
         &self,
         ctx: &Context<'_>,
         protocol_network: String,
-        merged: Option<bool>,
     ) -> Result<Vec<IndexingRule>, anyhow::Error> {
         let pool = ctx.data_unchecked::<PgPool>();
         let rules = AgentIndexingRule::get_all(pool, &protocol_network).await?;
-
-        // If merged is true, we would merge with global defaults
-        // For now, just return the rules as-is
-        let _ = merged; // TODO: Implement rule merging
-
         Ok(rules.into_iter().map(Into::into).collect())
     }
 }
@@ -197,7 +202,7 @@ impl IndexingRuleMutation {
         rule: IndexingRuleInput,
     ) -> Result<IndexingRule, anyhow::Error> {
         let pool = ctx.data_unchecked::<PgPool>();
-        let result = AgentIndexingRule::set(pool, rule.into()).await?;
+        let result = AgentIndexingRule::set(pool, rule.try_into()?).await?;
         Ok(result.into())
     }
 

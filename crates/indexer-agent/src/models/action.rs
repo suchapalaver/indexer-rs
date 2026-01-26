@@ -149,31 +149,46 @@ impl Action {
         pool: &PgPool,
         filter: ActionFilter,
     ) -> Result<Vec<Self>, sqlx::Error> {
-        // Build dynamic query based on filter
+        // Build dynamic query based on filter with correct parameter indices
         let mut query = String::from(r#"SELECT * FROM "Actions" WHERE 1=1"#);
+        let mut param_idx = 1u32;
 
         if filter.id.is_some() {
-            query.push_str(" AND id = $1");
+            query.push_str(&format!(" AND id = ${param_idx}"));
+            param_idx += 1;
         }
         if filter.status.is_some() {
-            query.push_str(" AND status = $2");
+            query.push_str(&format!(" AND status = ${param_idx}"));
+            param_idx += 1;
         }
         if filter.action_type.is_some() {
-            query.push_str(" AND type = $3");
+            query.push_str(&format!(" AND type = ${param_idx}"));
+            param_idx += 1;
         }
         if filter.protocol_network.is_some() {
-            query.push_str(" AND protocol_network = $4");
+            query.push_str(&format!(" AND protocol_network = ${param_idx}"));
+            // param_idx += 1; // Not needed for last parameter
         }
 
         query.push_str(" ORDER BY priority DESC, created_at ASC");
 
-        sqlx::query_as::<_, Self>(&query)
-            .bind(filter.id)
-            .bind(filter.status)
-            .bind(filter.action_type)
-            .bind(&filter.protocol_network)
-            .fetch_all(pool)
-            .await
+        // Build query with only the parameters that are present
+        let mut query_builder = sqlx::query_as::<_, Self>(&query);
+
+        if let Some(id) = filter.id {
+            query_builder = query_builder.bind(id);
+        }
+        if let Some(status) = filter.status {
+            query_builder = query_builder.bind(status);
+        }
+        if let Some(action_type) = filter.action_type {
+            query_builder = query_builder.bind(action_type);
+        }
+        if let Some(ref protocol_network) = filter.protocol_network {
+            query_builder = query_builder.bind(protocol_network);
+        }
+
+        query_builder.fetch_all(pool).await
     }
 
     /// Get all queued actions for a protocol network
