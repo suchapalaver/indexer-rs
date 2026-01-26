@@ -40,9 +40,19 @@ max_receipts_per_request = 10000
 # Enable Horizon migration support and detection
 # When enabled: Check if Horizon contracts are active in the network
 #   - If Horizon contracts detected: Hybrid migration mode (new V2 receipts only, process existing V1 receipts)
-#   - If Horizon contracts not detected: Errors 
+#   - If Horizon contracts not detected: Errors
 # When enabled, set `blockchain.subgraph_service_address` and
 # `blockchain.receipts_verifier_address_v2`
 
 # When disabled: Pure legacy mode, no Horizon detection performed
 enabled = false
+
+[agent]
+# Enable agent functionality (management API, reconciliation, allocation management)
+enabled = false
+
+[agent.management_api]
+# Port for the Management API GraphQL server
+port = 8000
+# Host address to bind to
+host = "0.0.0.0"

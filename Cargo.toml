@@ -4,6 +4,8 @@ members = [
     "crates/attestation",
     "crates/config",
     "crates/dips",
+    "crates/indexer-agent",
+    "crates/indexer-management-api",
     "crates/indexer-receipt",
     "crates/monitor",
     "crates/profiler",

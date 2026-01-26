@@ -42,6 +42,7 @@ pub struct Config {
     pub tap: TapConfig,
     pub dips: Option<DipsConfig>,
     pub horizon: HorizonConfig,
+    pub agent: AgentConfig,
 }
 
 // Newtype wrapping Config to be able use serde_ignored with Figment
@@ -894,6 +895,58 @@ pub struct HorizonConfig {
     /// When disabled: Pure legacy mode, no Horizon detection performed
     #[serde(default)]
     pub enabled: bool,
+}
+
+/// Configuration for the indexer agent functionality
+#[derive(Debug, Default, Deserialize)]
+#[cfg_attr(test, derive(PartialEq))]
+pub struct AgentConfig {
+    /// Enable agent functionality (management API, reconciliation, etc.)
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Management API configuration
+    #[serde(default)]
+    pub management_api: ManagementApiConfig,
+}
+
+/// Configuration for the Management API GraphQL server
+#[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(PartialEq))]
+pub struct ManagementApiConfig {
+    /// Port for the Management API GraphQL server
+    #[serde(default = "default_management_api_port")]
+    pub port: u16,
+
+    /// Host address to bind to
+    #[serde(default = "default_management_api_host")]
+    pub host: String,
+}
+
+fn default_management_api_port() -> u16 {
+    8000
+}
+
+fn default_management_api_host() -> String {
+    "0.0.0.0".to_string()
+}
+
+impl Default for ManagementApiConfig {
+    fn default() -> Self {
+        Self {
+            port: default_management_api_port(),
+            host: default_management_api_host(),
+        }
+    }
+}
+
+impl ManagementApiConfig {
+    /// Get the socket address for the management API server
+    pub fn get_socket_addr(&self) -> SocketAddr {
+        format!("{}:{}", self.host, self.port)
+            .parse()
+            .expect("Invalid management API socket address")
+    }
 }
 
 #[cfg(test)]

@@ -79,15 +79,17 @@ pub async fn run() -> anyhow::Result<()> {
 
     // V2 escrow accounts are in the network subgraph, not a separate escrow_v2 subgraph
 
-    // Establish Database connection necessary for serving indexer management
-    // requests with defined schema
-    // Note: Typically, you'd call `sqlx::migrate!();` here to sync the models
-    // which defaults to files in  "./migrations" to sync the database;
-    // however, this can cause conflicts with the migrations run by indexer
-    // agent. Hence we leave syncing and migrating entirely to the agent and
-    // assume the models are up to date in the service.
+    // Establish Database connection and run migrations
     let database =
         database::connect(config.database.clone().get_formated_postgres_url().as_ref()).await;
+
+    // Run database migrations
+    tracing::info!("Running database migrations...");
+    sqlx::migrate!("../../migrations")
+        .run(&database)
+        .await
+        .context("Failed to run database migrations")?;
+    tracing::info!("Database migrations completed successfully");
 
     let domain_separator = tap_eip712_domain(
         config.blockchain.chain_id as u64,
