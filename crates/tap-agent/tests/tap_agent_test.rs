@@ -25,7 +25,7 @@ use sqlx::PgPool;
 use test_assets::{
     assert_while_retry, flush_messages, ALLOCATION_ID_0, ALLOCATION_ID_1, ALLOCATION_ID_2,
     ESCROW_ACCOUNTS_BALANCES, ESCROW_ACCOUNTS_SENDERS_TO_SIGNERS, INDEXER_ADDRESS,
-    INDEXER_ALLOCATIONS, TAP_EIP712_DOMAIN, TAP_EIP712_DOMAIN_V2, TAP_SENDER, TAP_SIGNER,
+    INDEXER_ALLOCATIONS, TAP_EIP712_DOMAIN_V2, TAP_SENDER, TAP_SIGNER,
 };
 use thegraph_core::alloy::primitives::Address;
 use tokio::sync::{mpsc, watch};
@@ -94,13 +94,14 @@ pub async fn start_agent(
         escrow_polling_interval: Duration::from_secs(10),
         tap_sender_timeout: Duration::from_secs(30),
         trusted_senders: HashSet::new(),
-        tap_mode: indexer_config::TapMode::Legacy,
+        tap_mode: indexer_config::TapMode {
+            subgraph_service_address: thegraph_core::alloy::primitives::Address::ZERO,
+        },
         allocation_reconciliation_interval: Duration::from_secs(300),
     }));
 
     let args = SenderAccountsManagerArgs {
         config,
-        domain_separator: TAP_EIP712_DOMAIN.clone(),
         domain_separator_v2: TAP_EIP712_DOMAIN_V2.clone(),
         pgpool,
         indexer_allocations: indexer_allocations1,

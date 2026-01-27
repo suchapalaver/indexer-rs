@@ -28,20 +28,14 @@ impl Check<TapReceipt> for ServiceProviderCheck {
         _: &tap_core::receipt::Context,
         receipt: &CheckingReceipt,
     ) -> CheckResult {
-        match receipt.signed_receipt() {
-            // Not applicable for V1
-            TapReceipt::V1(_) => Ok(()),
-
-            // Validate data_service for V2
-            TapReceipt::V2(r) => {
-                if self.indexer_address == r.message.service_provider {
-                    Ok(())
-                } else {
-                    Err(CheckError::Failed(anyhow::anyhow!(
-                        "Invalid service_provider: receipt is not addressed to this indexer",
-                    )))
-                }
-            }
+        // V2 (Horizon) only - V1/Legacy support has been removed
+        let TapReceipt::V2(r) = receipt.signed_receipt();
+        if self.indexer_address == r.message.service_provider {
+            Ok(())
+        } else {
+            Err(CheckError::Failed(anyhow::anyhow!(
+                "Invalid service_provider: receipt is not addressed to this indexer",
+            )))
         }
     }
 }

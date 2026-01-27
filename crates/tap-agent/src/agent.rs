@@ -40,8 +40,7 @@ use indexer_config::{
     SubgraphConfig, SubgraphsConfig, TapConfig,
 };
 use indexer_monitor::{
-    empty_escrow_accounts_watcher, escrow_accounts_v1, escrow_accounts_v2, indexer_allocations,
-    DeploymentDetails, SubgraphClient,
+    escrow_accounts_v1, escrow_accounts_v2, indexer_allocations, DeploymentDetails, SubgraphClient,
 };
 use ractor::{concurrency::JoinHandle, Actor, ActorRef};
 use sender_account::SenderAccountConfig;
@@ -49,7 +48,7 @@ use sender_accounts_manager::SenderAccountsManager;
 
 use crate::{
     agent::sender_accounts_manager::{SenderAccountsManagerArgs, SenderAccountsManagerMessage},
-    database, CONFIG, EIP_712_DOMAIN, EIP_712_DOMAIN_V2,
+    database, CONFIG, EIP_712_DOMAIN_V2,
 };
 
 /// Actor, Arguments, State, Messages and implementation for [crate::agent::sender_account::SenderAccount]
@@ -184,93 +183,53 @@ pub async fn start_agent(
 
     tracing::info!("V1 escrow accounts watcher initialized successfully");
 
-    // Determine if we should check for Horizon contracts and potentially enable hybrid mode:
-    // - Legacy mode: if [horizon].enabled = false
-    // - Horizon mode: if [horizon].enabled = true; verify network readiness
-    let is_horizon_enabled = if CONFIG.tap_mode().is_horizon() {
-        tracing::info!("Horizon mode configured; checking Network Subgraph readiness");
-        match indexer_monitor::is_horizon_active(network_subgraph).await {
-            Ok(true) => {
-                tracing::info!(
-                    "Horizon schema available in network subgraph - enabling hybrid migration mode"
-                );
-                tracing::info!(
-                    "TAP Agent Mode: Process existing V1 receipts for RAVs, accept new V2 receipts"
-                );
-                tracing::info!(
-                    "V2 watcher will automatically detect new PaymentsEscrow accounts as they appear"
-                );
-                true
-            }
-            Ok(false) => {
-                anyhow::bail!(
-                    "Horizon enabled, but the Network Subgraph indicates Horizon is not active (no PaymentsEscrow accounts found). Deploy Horizon (V2) contracts and the updated Network Subgraph, or disable Horizon ([horizon].enabled = false)"
-                );
-            }
-            Err(e) => {
-                anyhow::bail!(
-                    "Failed to detect Horizon contracts due to network/subgraph error: {}. Cannot start with Horizon enabled when network status is unknown.",
-                    e
-                );
-            }
+    // Verify Horizon is active in the network (V1/Legacy mode removed)
+    tracing::info!("Checking Network Subgraph for Horizon readiness");
+    match indexer_monitor::is_horizon_active(network_subgraph).await {
+        Ok(true) => {
+            tracing::info!("Horizon contracts detected in network subgraph");
         }
-    } else {
-        tracing::info!("Horizon not configured - using pure legacy mode");
-        false
-    };
+        Ok(false) => {
+            anyhow::bail!(
+                "Horizon is not active in the network (no PaymentsEscrow accounts found). \
+                Deploy Horizon (V2) contracts and the updated Network Subgraph."
+            );
+        }
+        Err(e) => {
+            anyhow::bail!(
+                "Failed to detect Horizon contracts due to network/subgraph error: {}. \
+                Cannot start when network status is unknown.",
+                e
+            );
+        }
+    }
 
-    // Create V2 escrow accounts watcher only if Horizon is active
+    // Create V2 escrow accounts watcher
     // V2 escrow accounts are in the network subgraph, not a separate TAP v2 subgraph
-    let escrow_accounts_v2 = if is_horizon_enabled {
-        tracing::info!(
-            "Initializing V2 escrow accounts watcher with indexer {}",
-            indexer_address
-        );
-        let watcher = escrow_accounts_v2(
-            network_subgraph,
-            *indexer_address,
-            *network_sync_interval,
-            false,
-        )
-        .await
-        .with_context(|| "Error creating escrow_accounts_v2 channel")?;
+    tracing::info!(
+        "Initializing V2 escrow accounts watcher with indexer {}",
+        indexer_address
+    );
+    let escrow_accounts_v2 = escrow_accounts_v2(
+        network_subgraph,
+        *indexer_address,
+        *network_sync_interval,
+        false,
+    )
+    .await
+    .with_context(|| "Error creating escrow_accounts_v2 channel")?;
 
-        watcher
-    } else {
-        tracing::info!("Creating empty V2 escrow accounts watcher (Horizon disabled)");
-        // Create a dummy watcher that never updates for consistency
-        empty_escrow_accounts_watcher()
-    };
+    tracing::info!("TAP Agent: V2-only mode (V1/Legacy support removed)");
 
-    // In both modes we need both watchers for the hybrid processing
-    let (escrow_accounts_v1_final, escrow_accounts_v2_final) = if is_horizon_enabled {
-        tracing::info!("TAP Agent: Horizon migration mode - processing existing V1 receipts and new V2 receipts");
-        tracing::info!("Escrow account watchers: V1 (active) + V2 (active)");
-        (escrow_accounts_v1, escrow_accounts_v2)
-    } else {
-        tracing::info!("TAP Agent: Legacy mode - V1 receipts only");
-        tracing::info!("Escrow account watchers: V1 (active) + V2 (empty)");
-        (escrow_accounts_v1, escrow_accounts_v2)
-    };
-
-    let config = Box::leak(Box::new(if is_horizon_enabled {
-        // Use the TapMode from config since horizon is actually enabled and active
-        SenderAccountConfig::from_config(&CONFIG)
-    } else {
-        // Override to Legacy mode since horizon is not active in the network
-        let mut config = SenderAccountConfig::from_config(&CONFIG);
-        config.tap_mode = indexer_config::TapMode::Legacy;
-        config
-    }));
+    let config = Box::leak(Box::new(SenderAccountConfig::from_config(&CONFIG)));
 
     let args = SenderAccountsManagerArgs {
         config,
-        domain_separator: EIP_712_DOMAIN.clone(),
         domain_separator_v2: EIP_712_DOMAIN_V2.clone(),
         pgpool,
         indexer_allocations,
-        escrow_accounts_v1: escrow_accounts_v1_final,
-        escrow_accounts_v2: escrow_accounts_v2_final,
+        escrow_accounts_v1,
+        escrow_accounts_v2,
         escrow_subgraph,
         network_subgraph,
         sender_aggregator_endpoints: sender_aggregator_endpoints.clone(),
@@ -304,9 +263,7 @@ pub struct StartAgentArgs {
     pub escrow_accounts_v1: tokio::sync::watch::Receiver<indexer_monitor::EscrowAccounts>,
     /// V2 escrow accounts watcher
     pub escrow_accounts_v2: tokio::sync::watch::Receiver<indexer_monitor::EscrowAccounts>,
-    /// EIP-712 domain separator for V1
-    pub domain_separator: thegraph_core::alloy::sol_types::Eip712Domain,
-    /// EIP-712 domain separator for V2
+    /// EIP-712 domain separator for V2 (Horizon)
     pub domain_separator_v2: thegraph_core::alloy::sol_types::Eip712Domain,
     /// Sender account configuration
     pub config: SenderAccountConfig,
@@ -354,7 +311,6 @@ pub async fn start_agent_with_deps(
         indexer_allocations,
         escrow_accounts_v1,
         escrow_accounts_v2,
-        domain_separator,
         domain_separator_v2,
         config,
         sender_aggregator_endpoints,
@@ -363,19 +319,16 @@ pub async fn start_agent_with_deps(
         receipt_notification_rx,
     } = args;
 
+    // V1/Legacy mode has been removed; Horizon is now required
+    if !is_horizon_enabled {
+        anyhow::bail!("Horizon must be enabled. V1/Legacy TAP mode has been removed.");
+    }
+
     // Leak the config to get a static reference (matches existing pattern)
-    let config = Box::leak(Box::new(if is_horizon_enabled {
-        config
-    } else {
-        // Override to Legacy mode if horizon is not active
-        let mut config = config;
-        config.tap_mode = indexer_config::TapMode::Legacy;
-        config
-    }));
+    let config = Box::leak(Box::new(config));
 
     let manager_args = SenderAccountsManagerArgs {
         config,
-        domain_separator,
         domain_separator_v2,
         pgpool,
         indexer_allocations,

@@ -54,25 +54,11 @@ impl Check<TapReceipt> for AllocationId {
         _: &tap_core::receipt::Context,
         receipt: &CheckingReceipt,
     ) -> CheckResult {
-        // Support both Legacy (V1) and Horizon (V2) receipts.
-        // V1 provides allocation_id directly; V2 provides collection_id which we map to an Address.
-        let allocation_id = if let Some(a) = receipt.signed_receipt().allocation_id() {
-            a
-        } else if let Some(cid) = receipt.signed_receipt().collection_id() {
-            // V2: collection_id is 32 bytes with the 20-byte address right-aligned (left-padded zeros).
-            let bytes = cid.as_slice();
-            if bytes.len() != 32 {
-                return Err(CheckError::Failed(anyhow!(
-                    "Invalid collection_id length: {} (expected 32)",
-                    bytes.len()
-                )));
-            }
-            Address::from_slice(&bytes[12..32])
-        } else {
-            return Err(CheckError::Failed(anyhow!(
-                "Receipt does not have an allocation_id or collection_id"
-            )));
-        };
+        // V2 receipts provide collection_id which we map to an Address.
+        // collection_id is 32 bytes with the 20-byte address right-aligned (left-padded zeros).
+        let cid = receipt.signed_receipt().collection_id();
+        let bytes = cid.as_slice();
+        let allocation_id = Address::from_slice(&bytes[12..32]);
 
         tracing::debug!(
             allocation_id = %allocation_id,

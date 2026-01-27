@@ -65,7 +65,6 @@ impl TapAgentHandle {
 /// * `escrow_subgraph` - Escrow subgraph client
 /// * `escrow_accounts_v1` - V1 escrow accounts watcher
 /// * `escrow_accounts_v2` - V2 escrow accounts watcher
-/// * `domain_separator` - EIP-712 domain separator for V1
 /// * `domain_separator_v2` - EIP-712 domain separator for V2
 /// * `is_horizon_enabled` - Whether Horizon mode is active
 #[allow(clippy::too_many_arguments)]
@@ -76,7 +75,6 @@ pub async fn start_tap_agent(
     escrow_subgraph: &'static SubgraphClient,
     escrow_accounts_v1: Receiver<EscrowAccounts>,
     escrow_accounts_v2: Receiver<EscrowAccounts>,
-    domain_separator: Eip712Domain,
     domain_separator_v2: Eip712Domain,
     is_horizon_enabled: bool,
 ) -> anyhow::Result<TapAgentHandle> {
@@ -107,7 +105,6 @@ pub async fn start_tap_agent(
         indexer_allocations,
         escrow_accounts_v1,
         escrow_accounts_v2,
-        domain_separator,
         domain_separator_v2,
         config: sender_account_config,
         sender_aggregator_endpoints: config.tap.sender_aggregator_endpoints.clone(),

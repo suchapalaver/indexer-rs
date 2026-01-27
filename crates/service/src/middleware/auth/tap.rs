@@ -64,10 +64,7 @@ where
                     IndexerServiceError::ReceiptNotFound
                 })?;
 
-                let version = match &receipt {
-                    TapReceipt::V1(_) => "V1",
-                    TapReceipt::V2(_) => "V2",
-                };
+                let version = "V2";
                 tracing::debug!(receipt_version = version, "Starting TAP receipt validation");
 
                 // Verify the receipt and store it in the database
@@ -98,7 +95,7 @@ where
 }
 
 pub fn dual_tap_receipt_authorize<T, B>(
-    tap_manager_v1: Arc<Manager<T, TapReceipt>>,
+    _tap_manager_v1: Arc<Manager<T, TapReceipt>>,
     tap_manager_v2: Arc<Manager<T, TapReceipt>>,
     failed_receipt_metric: &'static prometheus::CounterVec,
 ) -> impl AsyncAuthorizeRequest<
@@ -116,7 +113,6 @@ where
         let receipt = request.extensions_mut().remove::<TapReceipt>();
         let labels = request.extensions().get::<MetricLabels>().cloned();
         let ctx = request.extensions().get::<Arc<Context>>().cloned();
-        let manager_v1 = tap_manager_v1.clone();
         let manager_v2 = tap_manager_v2.clone();
 
         async move {
@@ -128,11 +124,9 @@ where
                     IndexerServiceError::ReceiptNotFound
                 })?;
 
-                // SELECT THE RIGHT MANAGER BASED ON RECEIPT VERSION
-                let (tap_manager, version) = match &receipt {
-                    TapReceipt::V1(_) => (manager_v1, "V1"),
-                    TapReceipt::V2(_) => (manager_v2, "V2"),
-                };
+                // V2 (Horizon) only - V1/Legacy support has been removed
+                let tap_manager = manager_v2;
+                let version = "V2";
 
                 tracing::debug!(receipt_version = version, "Using version-specific manager");
 
@@ -182,8 +176,7 @@ mod tests {
         receipt::checks::{Check, CheckError, CheckList, CheckResult},
     };
     use test_assets::{
-        assert_while_retry, create_signed_receipt, SignedReceiptRequest, TAP_EIP712_DOMAIN,
-        TAP_EIP712_DOMAIN_V2,
+        assert_while_retry, create_signed_receipt_v2, TAP_EIP712_DOMAIN, TAP_EIP712_DOMAIN_V2,
     };
     use tower::{Service, ServiceBuilder, ServiceExt};
     use tower_http::auth::AsyncRequireAuthorizationLayer;
@@ -262,11 +255,11 @@ mod tests {
         let test_db = test_assets::setup_shared_test_db().await;
         let mut service = service(metric, test_db.pool.clone()).await;
 
-        let receipt = create_signed_receipt(SignedReceiptRequest::builder().build()).await;
+        let receipt = create_signed_receipt_v2().call().await;
 
         // check with receipt
         let mut req = Request::new(Body::default());
-        req.extensions_mut().insert(TapReceipt::V1(receipt));
+        req.extensions_mut().insert(TapReceipt::V2(receipt));
         let res = service.call(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
@@ -299,11 +292,11 @@ mod tests {
         // default labels, all empty
         let labels: MetricLabels = Arc::new(TestLabel);
 
-        let mut receipt = create_signed_receipt(SignedReceiptRequest::builder().build()).await;
+        let mut receipt = create_signed_receipt_v2().call().await;
         // change the nonce to make the receipt invalid
         receipt.message.nonce = FAILED_NONCE;
         let mut req = Request::new(Body::default());
-        req.extensions_mut().insert(TapReceipt::V1(receipt));
+        req.extensions_mut().insert(TapReceipt::V2(receipt));
         req.extensions_mut().insert(labels);
         let response = service.call(req);
 

@@ -19,14 +19,8 @@ pub async fn receipt_middleware(mut request: Request, next: Next) -> Response {
 
     match request.extract_parts::<TypedHeader<TapHeader>>().await {
         Ok(TypedHeader(TapHeader(receipt))) => {
-            let version = match &receipt {
-                crate::tap::TapReceipt::V1(_) => "V1",
-                crate::tap::TapReceipt::V2(_) => "V2",
-            };
-            tracing::debug!(
-                receipt_version = version,
-                "TAP receipt extracted successfully"
-            );
+            // V2 (Horizon) only - V1/Legacy support has been removed
+            tracing::debug!(receipt_version = "V2", "TAP receipt extracted successfully");
             request.extensions_mut().insert(receipt);
         }
         Err(e) => {
@@ -51,7 +45,7 @@ mod tests {
     };
     use axum_extra::headers::Header;
     use reqwest::StatusCode;
-    use test_assets::{create_signed_receipt, SignedReceiptRequest};
+    use test_assets::create_signed_receipt_v2;
     use tower::ServiceExt;
 
     use crate::{middleware::tap_receipt::receipt_middleware, service::TapHeader, tap::TapReceipt};
@@ -60,10 +54,10 @@ mod tests {
     async fn test_receipt_middleware() {
         let middleware = from_fn(receipt_middleware);
 
-        let receipt = create_signed_receipt(SignedReceiptRequest::builder().build()).await;
+        let receipt = create_signed_receipt_v2().call().await;
         let receipt_json = serde_json::to_string(&receipt).unwrap();
 
-        let receipt = TapReceipt::V1(receipt);
+        let receipt = TapReceipt::V2(receipt);
 
         let handle = move |extensions: Extensions| async move {
             let received_receipt = extensions

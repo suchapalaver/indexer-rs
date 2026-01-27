@@ -302,8 +302,6 @@ pub struct ChannelReceiptNotification {
 pub struct SenderAccountsManagerArgs {
     /// Config forwarded to [SenderAccount]
     pub config: &'static SenderAccountConfig,
-    /// Domain separator used for tap
-    pub domain_separator: Eip712Domain,
 
     /// Domain separator used for tap v2 (Horizon)
     pub domain_separator_v2: Eip712Domain,
@@ -347,7 +345,6 @@ pub struct State {
     channel_receipts_watcher_handle: Option<tokio::task::JoinHandle<()>>,
 
     config: &'static SenderAccountConfig,
-    domain_separator: Eip712Domain,
     domain_separator_v2: Eip712Domain,
     pgpool: PgPool,
     // Raw allocation watcher (address -> Allocation). Normalized per-sender later.
@@ -376,7 +373,6 @@ impl Actor for SenderAccountsManager {
         myself: ActorRef<Self::Msg>,
         SenderAccountsManagerArgs {
             config,
-            domain_separator,
             domain_separator_v2,
             indexer_allocations,
             pgpool,
@@ -439,7 +435,6 @@ impl Actor for SenderAccountsManager {
 
         let mut state = State {
             config,
-            domain_separator,
             domain_separator_v2,
             sender_ids_v1: HashSet::new(),
             sender_ids_v2: HashSet::new(),
@@ -946,10 +941,7 @@ impl State {
                 FROM grouped
                 GROUP BY signer_address
             "#,
-            self.config
-                .tap_mode
-                .require_subgraph_service_address()
-                .encode_hex(),
+            self.config.tap_mode.subgraph_service_address.encode_hex(),
             self.config.indexer_address.encode_hex()
         )
         .fetch_all(&self.pgpool)
@@ -1011,10 +1003,7 @@ impl State {
                 GROUP BY payer
             "#,
             // Constrain to our Horizon bucket to avoid conflating RAVs across services/providers
-            self.config
-                .tap_mode
-                .require_subgraph_service_address()
-                .encode_hex(),
+            self.config.tap_mode.subgraph_service_address.encode_hex(),
             self.config.indexer_address.encode_hex()
         )
         .fetch_all(&self.pgpool)
@@ -1123,7 +1112,6 @@ impl State {
             indexer_allocations,
             escrow_subgraph: self.escrow_subgraph,
             network_subgraph: self.network_subgraph,
-            domain_separator: self.domain_separator.clone(),
             domain_separator_v2: self.domain_separator_v2.clone(),
             sender_aggregator_endpoint: self
                 .sender_aggregator_endpoints
@@ -1526,7 +1514,7 @@ mod tests {
             create_rav, create_received_receipt, create_sender_accounts_manager,
             generate_random_prefix, get_grpc_url, get_sender_account_config, store_rav,
             store_receipt, ALLOCATION_ID_0, ALLOCATION_ID_1, INDEXER, SENDER_2,
-            TAP_EIP712_DOMAIN_SEPARATOR, TAP_EIP712_DOMAIN_SEPARATOR_V2,
+            TAP_EIP712_DOMAIN_SEPARATOR_V2,
         },
     };
     const DUMMY_URL: &str = "http://localhost:1234";
@@ -1581,7 +1569,6 @@ mod tests {
             prefix.clone(),
             State {
                 config,
-                domain_separator: TAP_EIP712_DOMAIN_SEPARATOR.clone(),
                 domain_separator_v2: TAP_EIP712_DOMAIN_SEPARATOR_V2.clone(),
                 sender_ids_v1: HashSet::new(),
                 sender_ids_v2: HashSet::new(),

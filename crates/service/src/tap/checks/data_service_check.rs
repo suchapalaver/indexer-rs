@@ -28,22 +28,16 @@ impl Check<TapReceipt> for DataServiceCheck {
         _: &tap_core::receipt::Context,
         receipt: &CheckingReceipt,
     ) -> CheckResult {
-        match receipt.signed_receipt() {
-            // Not applicable for V1
-            TapReceipt::V1(_) => Ok(()),
-
-            // Validate data_service for V2
-            TapReceipt::V2(r) => {
-                let got = r.message.data_service;
-                if self.allowed.contains(&got) {
-                    Ok(())
-                } else {
-                    Err(CheckError::Failed(anyhow::anyhow!(
-                        "Invalid data_service: {} is not allowed for this indexer",
-                        got.encode_hex()
-                    )))
-                }
-            }
+        // V2 (Horizon) only - V1/Legacy support has been removed
+        let TapReceipt::V2(r) = receipt.signed_receipt();
+        let got = r.message.data_service;
+        if self.allowed.contains(&got) {
+            Ok(())
+        } else {
+            Err(CheckError::Failed(anyhow::anyhow!(
+                "Invalid data_service: {} is not allowed for this indexer",
+                got.encode_hex()
+            )))
         }
     }
 }

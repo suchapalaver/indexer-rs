@@ -11,7 +11,6 @@ use bigdecimal::{num_bigint::ToBigInt, ToPrimitive};
 use indexer_receipt::TapReceipt;
 use sqlx::{postgres::types::PgRange, types::BigDecimal};
 use tap_core::manager::adapters::{safe_truncate_receipts, ReceiptDelete, ReceiptRead};
-use tap_graph::{Receipt, SignedReceipt};
 use thegraph_core::{
     alloy::{
         hex::ToHexExt,
@@ -20,7 +19,7 @@ use thegraph_core::{
     CollectionId,
 };
 
-use super::{error::AdapterError, Horizon, Legacy, TapAgentContext};
+use super::{error::AdapterError, Horizon, TapAgentContext};
 use crate::tap::{signers_trimmed, CheckingReceipt};
 impl From<TryFromIntError> for AdapterError {
     fn from(error: TryFromIntError) -> Self {
@@ -74,132 +73,6 @@ fn rangebounds_to_pgrange<R: RangeBounds<u64>>(range: R) -> PgRange<BigDecimal> 
         u64_bound_to_bigdecimal_bound(range.start_bound()),
         u64_bound_to_bigdecimal_bound(range.end_bound()),
     ))
-}
-
-/// Implements a [ReceiptRead] for [TapReceipt]
-/// in case [super::NetworkVersion] is [Legacy]
-///
-/// This is important because receipts for each network version
-/// are stored in a different database table
-#[async_trait::async_trait]
-impl ReceiptRead<TapReceipt> for TapAgentContext<Legacy> {
-    type AdapterError = AdapterError;
-
-    async fn retrieve_receipts_in_timestamp_range<R: RangeBounds<u64> + Send>(
-        &self,
-        timestamp_range_ns: R,
-        receipts_limit: Option<u64>,
-    ) -> Result<Vec<CheckingReceipt>, Self::AdapterError> {
-        let signers = signers_trimmed(self.escrow_accounts.clone(), self.sender)
-            .await
-            .map_err(|e| AdapterError::ReceiptRead {
-                error: format!("{e:?}."),
-            })?;
-
-        let receipts_limit = receipts_limit.map_or(1000, |limit| limit);
-
-        let records = sqlx::query!(
-            r#"
-                SELECT id, signature, allocation_id, timestamp_ns, nonce, value
-                FROM scalar_tap_receipts
-                WHERE allocation_id = $1 AND signer_address IN (SELECT unnest($2::text[]))
-                AND $3::numrange @> timestamp_ns
-                ORDER BY timestamp_ns ASC
-                LIMIT $4
-            "#,
-            self.allocation_id.encode_hex(),
-            &signers,
-            rangebounds_to_pgrange(timestamp_range_ns),
-            (receipts_limit + 1) as i64,
-        )
-        .fetch_all(&self.pgpool)
-        .await?;
-        let mut receipts = records
-            .into_iter()
-            .map(|record| {
-                let signature = record.signature.as_slice().try_into()
-                    .map_err(|e| AdapterError::ReceiptRead {
-                        error: format!(
-                            "Error decoding signature while retrieving receipt from database: {e}"
-                        ),
-                    })?;
-                let allocation_id = Address::from_str(&record.allocation_id).map_err(|e| {
-                    AdapterError::ReceiptRead {
-                        error: format!(
-                            "Error decoding allocation_id while retrieving receipt from database: {e}"
-                        ),
-                    }
-                })?;
-                let timestamp_ns = record
-                    .timestamp_ns
-                    .to_u64()
-                    .ok_or(AdapterError::ReceiptRead {
-                        error: "Error decoding timestamp_ns while retrieving receipt from database"
-                            .to_string(),
-                    })?;
-                let nonce = record.nonce.to_u64().ok_or(AdapterError::ReceiptRead {
-                    error: "Error decoding nonce while retrieving receipt from database".to_string(),
-                })?;
-                // Beware, BigDecimal::to_u128() actually uses to_u64() under the hood...
-                // So we're converting to BigInt to get a proper implementation of to_u128().
-                let value = record.value.to_bigint().and_then(|v| v.to_u128()).ok_or(AdapterError::ReceiptRead {
-                    error: "Error decoding value while retrieving receipt from database".to_string(),
-                })?;
-
-                let signed_receipt = SignedReceipt {
-                    message: Receipt {
-                        allocation_id,
-                        timestamp_ns,
-                        nonce,
-                        value,
-                    },
-                    signature,
-                };
-
-                Ok(CheckingReceipt::new(TapReceipt::V1(signed_receipt)))
-
-            })
-            .collect::<Result<Vec<_>, AdapterError>>()?;
-
-        safe_truncate_receipts(&mut receipts, receipts_limit);
-
-        Ok(receipts)
-    }
-}
-
-/// Implements a [ReceiptDelete] for [TapReceipt]
-/// in case [super::NetworkVersion] is [Legacy]
-///
-/// This is important because receipts for each network version
-/// are stored in a different database table
-#[async_trait::async_trait]
-impl ReceiptDelete for TapAgentContext<Legacy> {
-    type AdapterError = AdapterError;
-
-    async fn remove_receipts_in_timestamp_range<R: RangeBounds<u64> + Send>(
-        &self,
-        timestamp_ns: R,
-    ) -> Result<(), Self::AdapterError> {
-        let signers = signers_trimmed(self.escrow_accounts.clone(), self.sender)
-            .await
-            .map_err(|e| AdapterError::ReceiptDelete {
-                error: format!("{e:?}."),
-            })?;
-
-        sqlx::query!(
-            r#"
-                DELETE FROM scalar_tap_receipts
-                WHERE allocation_id = $1 AND signer_address IN (SELECT unnest($2::text[]))
-                    AND $3::numrange @> timestamp_ns
-            "#,
-            self.allocation_id.encode_hex(),
-            &signers,
-            rangebounds_to_pgrange(timestamp_ns)
-        )
-        .execute(&self.pgpool)
-        .await?;
-        Ok(())
-    }
 }
 
 /// Implements a [ReceiptRead] for [TapReceipt]
@@ -442,16 +315,6 @@ mod test {
         .1
     }
 
-    async fn legacy_adapter(
-        pgpool: PgPool,
-        escrow_accounts: Receiver<EscrowAccounts>,
-    ) -> TapAgentContext<Legacy> {
-        TapAgentContext::builder()
-            .pgpool(pgpool)
-            .escrow_accounts(escrow_accounts)
-            .build()
-    }
-
     async fn horizon_adapter(
         pgpool: PgPool,
         escrow_accounts: Receiver<EscrowAccounts>,
@@ -465,16 +328,6 @@ mod test {
 
     /// Insert a single receipt and retrieve it from the database using the adapter.
     /// The point here it to test the deserialization of large numbers.
-    #[tokio::test]
-    async fn insert_and_retrieve_single_receipt_legacy() {
-        // Set up test database with testcontainers
-        let test_db = test_assets::setup_shared_test_db().await;
-        let escrow_accounts = escrow_accounts();
-        let context = legacy_adapter(test_db.pool, escrow_accounts).await;
-
-        insert_and_retrieve_single_receipt_impl(context).await;
-    }
-
     #[tokio::test]
     async fn insert_and_retrieve_single_receipt_horizon() {
         // Set up test database with testcontainers
@@ -530,10 +383,9 @@ mod test {
                 use thegraph_core::CollectionId;
                 let expected_collection_id = *CollectionId::from(storage_adapter.allocation_id);
 
-                let id_matches = received_receipt.signed_receipt().allocation_id()
-                    == Some(storage_adapter.allocation_id)
-                    || received_receipt.signed_receipt().collection_id()
-                        == Some(expected_collection_id);
+                // V2 (Horizon) only - compare collection_id
+                let id_matches =
+                    received_receipt.signed_receipt().collection_id() == expected_collection_id;
 
                 range.contains(&received_receipt.signed_receipt().timestamp_ns())
                     && id_matches
@@ -612,8 +464,8 @@ mod test {
                 .filter(|(_, received_receipt)| {
                     use thegraph_core::CollectionId;
                     let expected_collection_id = *CollectionId::from(storage_adapter.allocation_id);
-                    if (received_receipt.signed_receipt().collection_id()
-                        == Some(expected_collection_id))
+                    // V2 (Horizon) only - compare collection_id directly
+                    if (received_receipt.signed_receipt().collection_id() == expected_collection_id)
                         && escrow_accounts_snapshot
                             .get_sender_for_signer(
                                 &received_receipt
@@ -725,134 +577,7 @@ mod test {
         }
     }
 
-    impl RemoveRange for Legacy {
-        async fn remove_range_and_check<R: RangeBounds<u64> + Send>(
-            storage_adapter: &TapAgentContext<Self>,
-            escrow_accounts: Receiver<EscrowAccounts>,
-            received_receipt_vec: &[CheckingReceipt],
-            range: R,
-        ) -> anyhow::Result<()> {
-            let escrow_accounts_snapshot = escrow_accounts.borrow();
-
-            // Storing the receipts
-            let mut received_receipt_id_vec = Vec::new();
-            for received_receipt in received_receipt_vec.iter() {
-                received_receipt_id_vec.push(
-                    store_receipt(&storage_adapter.pgpool, received_receipt.signed_receipt())
-                        .await
-                        .unwrap(),
-                );
-            }
-
-            // zip the 2 vectors together
-            let received_receipt_vec = received_receipt_id_vec
-                .into_iter()
-                .zip(received_receipt_vec.iter())
-                .collect::<Vec<_>>();
-
-            // Remove the received receipts by timestamp range for the correct (allocation_id,
-            // sender)
-            let received_receipt_vec: Vec<_> = received_receipt_vec
-                .iter()
-                .filter(|(_, received_receipt)| {
-                    if (received_receipt.signed_receipt().allocation_id()
-                        == Some(storage_adapter.allocation_id))
-                        && escrow_accounts_snapshot
-                            .get_sender_for_signer(
-                                &received_receipt
-                                    .signed_receipt()
-                                    .recover_signer(&TAP_EIP712_DOMAIN_SEPARATOR)
-                                    .unwrap(),
-                            )
-                            .is_ok_and(|v| v == storage_adapter.sender)
-                    {
-                        !range.contains(&received_receipt.signed_receipt().timestamp_ns())
-                    } else {
-                        true
-                    }
-                    // !range.contains(&received_receipt.signed_receipt().message.timestamp_ns)
-                })
-                .cloned()
-                .collect();
-
-            // Removing the received receipts in timestamp range from the database
-            storage_adapter
-                .remove_receipts_in_timestamp_range(range)
-                .await?;
-
-            // Retrieving all receipts in DB (including irrelevant ones)
-            let records = sqlx::query!(
-                r#"
-                SELECT signature, allocation_id, timestamp_ns, nonce, value
-                FROM scalar_tap_receipts
-            "#
-            )
-            .fetch_all(&storage_adapter.pgpool)
-            .await?;
-
-            // Check length
-            assert_eq!(records.len(), received_receipt_vec.len());
-
-            // Retrieving all receipts in DB (including irrelevant ones)
-            let recovered_received_receipt_set: Vec<_> = records
-                .into_iter()
-                .map(|record| {
-                    let signature = record.signature.as_slice().try_into().unwrap();
-                    let allocation_id = Address::from_str(&record.allocation_id).unwrap();
-                    let timestamp_ns = record.timestamp_ns.to_u64().unwrap();
-                    let nonce = record.nonce.to_u64().unwrap();
-                    // Beware, BigDecimal::to_u128() actually uses to_u64() under the hood...
-                    // So we're converting to BigInt to get a proper implementation of to_u128().
-                    let value = record
-                        .value
-                        .to_bigint()
-                        .map(|v| v.to_u128())
-                        .unwrap()
-                        .unwrap();
-
-                    let signed_receipt = SignedReceipt {
-                        message: Receipt {
-                            allocation_id,
-                            timestamp_ns,
-                            nonce,
-                            value,
-                        },
-                        signature,
-                    };
-                    signed_receipt.unique_id()
-                })
-                .collect();
-
-            // Check values recovered_received_receipt_set contains values received_receipt_vec
-            assert!(received_receipt_vec.iter().all(|(_, received_receipt)| {
-                recovered_received_receipt_set
-                    .contains(&received_receipt.signed_receipt().unique_id())
-            }));
-
-            // Removing all the receipts in the DB
-            sqlx::query!(
-                r#"
-                DELETE FROM scalar_tap_receipts
-            "#
-            )
-            .execute(&storage_adapter.pgpool)
-            .await?;
-
-            // Checking that there are no receipts left
-            let scalar_tap_receipts_db_count: i64 = sqlx::query!(
-                r#"
-                SELECT count(*)
-                FROM scalar_tap_receipts
-            "#
-            )
-            .fetch_one(&storage_adapter.pgpool)
-            .await?
-            .count
-            .unwrap();
-            assert_eq!(scalar_tap_receipts_db_count, 0);
-            Ok(())
-        }
-    }
+    // Legacy implementation removed - V1/Legacy TAP support has been dropped
 
     struct TestContextWithContainer<T> {
         context: TapAgentContext<T>,
@@ -864,75 +589,6 @@ mod test {
         fn deref(&self) -> &Self::Target {
             &self.context
         }
-    }
-
-    #[tokio::test]
-    async fn retrieve_receipts_with_limit_legacy() {
-        let test_db = test_assets::setup_shared_test_db().await;
-        let escrow_accounts = watch::channel(EscrowAccounts::new(
-            HashMap::from([(SENDER.1, U256::from(1000))]),
-            HashMap::from([(SENDER.1, vec![SIGNER.1])]),
-        ))
-        .1;
-        let context_wrapper: TestContextWithContainer<Legacy> = TestContextWithContainer {
-            context: TapAgentContext::builder()
-                .pgpool(test_db.pool.clone())
-                .escrow_accounts(escrow_accounts)
-                .build(),
-            _test_db: test_db,
-        };
-        let context = &context_wrapper.context;
-        // Creating 100 receipts with timestamps 42 to 141
-        for i in 0..100 {
-            let receipt = Legacy::create_received_receipt(
-                ALLOCATION_ID_0,
-                &SIGNER.0,
-                i + 684,
-                i + 42,
-                (i + 124).into(),
-            );
-            store_receipt(&context.pgpool, receipt.signed_receipt())
-                .await
-                .unwrap();
-        }
-
-        let recovered_received_receipt_vec = context
-            .retrieve_receipts_in_timestamp_range(0..141, Some(10))
-            .await
-            .unwrap();
-        assert_eq!(recovered_received_receipt_vec.len(), 10);
-
-        let recovered_received_receipt_vec = context
-            .retrieve_receipts_in_timestamp_range(0..141, Some(50))
-            .await
-            .unwrap();
-        assert_eq!(recovered_received_receipt_vec.len(), 50);
-
-        // add a copy in the same timestamp
-        for i in 0..100 {
-            let receipt = Legacy::create_received_receipt(
-                ALLOCATION_ID_0,
-                &SIGNER.0,
-                i + 684,
-                i + 43,
-                (i + 124).into(),
-            );
-            store_receipt(&context.pgpool, receipt.signed_receipt())
-                .await
-                .unwrap();
-        }
-
-        let recovered_received_receipt_vec = context
-            .retrieve_receipts_in_timestamp_range(0..141, Some(10))
-            .await
-            .unwrap();
-        assert_eq!(recovered_received_receipt_vec.len(), 9);
-
-        let recovered_received_receipt_vec = context
-            .retrieve_receipts_in_timestamp_range(0..141, Some(50))
-            .await
-            .unwrap();
-        assert_eq!(recovered_received_receipt_vec.len(), 49);
     }
 
     #[tokio::test]
@@ -1007,133 +663,6 @@ mod test {
     }
 
     #[tokio::test]
-    async fn retrieve_receipts_in_timestamp_range_legacy() {
-        let test_db = test_assets::setup_shared_test_db().await;
-        let escrow_accounts = watch::channel(EscrowAccounts::new(
-            HashMap::from([(SENDER.1, U256::from(1000))]),
-            HashMap::from([(SENDER.1, vec![SIGNER.1])]),
-        ))
-        .1;
-        let context_wrapper: TestContextWithContainer<Legacy> = TestContextWithContainer {
-            context: TapAgentContext::builder()
-                .pgpool(test_db.pool.clone())
-                .escrow_accounts(escrow_accounts.clone())
-                .build(),
-            _test_db: test_db,
-        };
-        let context = &context_wrapper.context;
-        // Creating 10 receipts with timestamps 42 to 51
-        let mut received_receipt_vec = Vec::new();
-        for i in 0..10 {
-            received_receipt_vec.push(Legacy::create_received_receipt(
-                ALLOCATION_ID_0,
-                &SIGNER.0,
-                i + 684,
-                i + 42,
-                (i + 124).into(),
-            ));
-
-            // Adding irrelevant receipts to make sure they are not retrieved
-            received_receipt_vec.push(Legacy::create_received_receipt(
-                ALLOCATION_ID_IRRELEVANT,
-                &SIGNER.0,
-                i + 684,
-                i + 42,
-                (i + 124).into(),
-            ));
-            received_receipt_vec.push(Legacy::create_received_receipt(
-                ALLOCATION_ID_0,
-                &SENDER_IRRELEVANT.0,
-                i + 684,
-                i + 42,
-                (i + 124).into(),
-            ));
-        }
-
-        // Storing the receipts
-        let mut received_receipt_id_vec = Vec::new();
-        for received_receipt in received_receipt_vec.iter() {
-            received_receipt_id_vec.push(
-                store_receipt(&context.pgpool, received_receipt.signed_receipt())
-                    .await
-                    .unwrap(),
-            );
-        }
-
-        macro_rules! test_ranges{
-            ($($arg: expr), +) => {
-                {
-                    $(
-                        assert!(
-                        retrieve_range_and_check(&context, escrow_accounts.clone(), &received_receipt_vec, $arg)
-                            .await
-                            .is_ok());
-                    )+
-                }
-            };
-        }
-
-        #[allow(clippy::reversed_empty_ranges)]
-        {
-            test_ranges!(
-                ..,
-                ..41,
-                ..42,
-                ..43,
-                ..50,
-                ..51,
-                ..52,
-                ..=41,
-                ..=42,
-                ..=43,
-                ..=50,
-                ..=51,
-                ..=52,
-                21..=41,
-                21..=42,
-                21..=43,
-                21..=50,
-                21..=51,
-                21..=52,
-                41..=41,
-                41..=42,
-                41..=43,
-                41..=50,
-                50..=48,
-                41..=51,
-                41..=52,
-                51..=51,
-                51..=52,
-                21..41,
-                21..42,
-                21..43,
-                21..50,
-                21..51,
-                21..52,
-                41..41,
-                41..42,
-                41..43,
-                41..50,
-                50..48,
-                41..51,
-                41..52,
-                51..51,
-                51..52,
-                41..,
-                42..,
-                43..,
-                50..,
-                51..,
-                52..,
-                (Bound::Excluded(42), Bound::Excluded(43)),
-                (Bound::Excluded(43), Bound::Excluded(43)),
-                (Bound::Excluded(43), Bound::Excluded(44)),
-                (Bound::Excluded(43), Bound::Excluded(45))
-            );
-        }
-    }
-
-    #[tokio::test]
     async fn retrieve_receipts_in_timestamp_range_horizon() {
         let test_db = test_assets::setup_shared_test_db().await;
         let escrow_accounts = watch::channel(EscrowAccounts::new(
@@ -1198,123 +727,6 @@ mod test {
                             .await
                             .is_ok());
                     )+
-                }
-            };
-        }
-
-        #[allow(clippy::reversed_empty_ranges)]
-        {
-            test_ranges!(
-                ..,
-                ..41,
-                ..42,
-                ..43,
-                ..50,
-                ..51,
-                ..52,
-                ..=41,
-                ..=42,
-                ..=43,
-                ..=50,
-                ..=51,
-                ..=52,
-                21..=41,
-                21..=42,
-                21..=43,
-                21..=50,
-                21..=51,
-                21..=52,
-                41..=41,
-                41..=42,
-                41..=43,
-                41..=50,
-                50..=48,
-                41..=51,
-                41..=52,
-                51..=51,
-                51..=52,
-                21..41,
-                21..42,
-                21..43,
-                21..50,
-                21..51,
-                21..52,
-                41..41,
-                41..42,
-                41..43,
-                41..50,
-                50..48,
-                41..51,
-                41..52,
-                51..51,
-                51..52,
-                41..,
-                42..,
-                43..,
-                50..,
-                51..,
-                52..,
-                (Bound::Excluded(42), Bound::Excluded(43)),
-                (Bound::Excluded(43), Bound::Excluded(43)),
-                (Bound::Excluded(43), Bound::Excluded(44)),
-                (Bound::Excluded(43), Bound::Excluded(45))
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn remove_receipts_in_timestamp_range_legacy() {
-        let test_db = test_assets::setup_shared_test_db().await;
-        let escrow_accounts = watch::channel(EscrowAccounts::new(
-            HashMap::from([(SENDER.1, U256::from(1000))]),
-            HashMap::from([(SENDER.1, vec![SIGNER.1])]),
-        ))
-        .1;
-        let context_wrapper: TestContextWithContainer<Legacy> = TestContextWithContainer {
-            context: TapAgentContext::builder()
-                .pgpool(test_db.pool.clone())
-                .escrow_accounts(escrow_accounts.clone())
-                .build(),
-            _test_db: test_db,
-        };
-        let context = &context_wrapper.context;
-        // Creating 10 receipts with timestamps 42 to 51
-        let mut received_receipt_vec = Vec::new();
-        for i in 0..10 {
-            received_receipt_vec.push(Legacy::create_received_receipt(
-                ALLOCATION_ID_0,
-                &SIGNER.0,
-                i + 684,
-                i + 42,
-                (i + 124).into(),
-            ));
-
-            // Adding irrelevant receipts to make sure they are not retrieved
-            received_receipt_vec.push(Legacy::create_received_receipt(
-                ALLOCATION_ID_IRRELEVANT,
-                &SIGNER.0,
-                i + 684,
-                i + 42,
-                (i + 124).into(),
-            ));
-            received_receipt_vec.push(Legacy::create_received_receipt(
-                ALLOCATION_ID_0,
-                &SENDER_IRRELEVANT.0,
-                i + 684,
-                i + 42,
-                (i + 124).into(),
-            ));
-        }
-
-        macro_rules! test_ranges{
-            ($($arg: expr), +) => {
-                {
-                    $(
-                        assert!(
-                            Legacy::remove_range_and_check(&context, escrow_accounts.clone(), &received_receipt_vec, $arg)
-                            .await.is_ok()
-                        );
-                    ) +
                 }
             };
         }

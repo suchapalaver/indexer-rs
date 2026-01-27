@@ -51,7 +51,6 @@ pub struct TapChecksConfig {
 
 #[derive(Clone)]
 pub struct IndexerTapContext {
-    domain_separator: Arc<Eip712Domain>,
     domain_separator_v2: Arc<Eip712Domain>,
     receipt_producer: Sender<(
         DatabaseReceipt,
@@ -91,10 +90,10 @@ impl IndexerTapContext {
 
     pub async fn new(
         pgpool: PgPool,
-        domain_separator: Eip712Domain,
+        _domain_separator: Eip712Domain,
         domain_separator_v2: Eip712Domain,
     ) -> Self {
-        Self::new_with_tap_agent(pgpool, domain_separator, domain_separator_v2, None).await
+        Self::new_with_tap_agent(pgpool, domain_separator_v2, None).await
     }
 
     /// Create a new IndexerTapContext with optional TAP agent notification channel.
@@ -104,7 +103,6 @@ impl IndexerTapContext {
     /// faster processing than pg_notify in the unified binary mode.
     pub async fn new_with_tap_agent(
         pgpool: PgPool,
-        domain_separator: Eip712Domain,
         domain_separator_v2: Eip712Domain,
         tap_agent: Option<&TapAgentHandle>,
     ) -> Self {
@@ -120,7 +118,6 @@ impl IndexerTapContext {
         Self {
             cancelation_token,
             receipt_producer: tx,
-            domain_separator: Arc::new(domain_separator),
             domain_separator_v2: Arc::new(domain_separator_v2),
         }
     }

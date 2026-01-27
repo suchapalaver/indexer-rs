@@ -255,7 +255,6 @@ pub async fn run() -> anyhow::Result<()> {
             escrow_subgraph_for_tap,
             v1_watcher_for_tap,
             v2_watcher_for_tap_final,
-            domain_separator.clone(),
             domain_separator_v2.clone(),
             is_horizon_active,
         )

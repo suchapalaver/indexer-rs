@@ -4,7 +4,6 @@
 use anyhow::anyhow;
 use bigdecimal::num_bigint::BigInt;
 use indexer_tap_agent::agent::sender_accounts_manager::ChannelReceiptNotification;
-use itertools::{Either, Itertools};
 use sqlx::{types::BigDecimal, PgPool};
 use tap_core::{manager::adapters::ReceiptStore, receipt::WithValueAndTimestamp};
 use thegraph_core::alloy::{hex::ToHexExt, sol_types::Eip712Domain};
@@ -30,21 +29,15 @@ pub struct InnerContext {
 
 #[derive(thiserror::Error, Debug)]
 enum ProcessReceiptError {
-    #[error("Failed to store v1 receipts: {0}")]
-    V1(anyhow::Error),
     #[error("Failed to store v2 receipts: {0}")]
     V2(anyhow::Error),
-    #[error("Failed to receipts for v1 and v2. Error v1: {0}. Error v2: {1}")]
-    Both(anyhow::Error, anyhow::Error),
 }
 
-/// Indicates which versions of Receipts where processed
+/// Indicates which versions of Receipts were processed
 /// It's intended to be used for migration tests
 #[derive(Debug, PartialEq, Eq)]
 pub enum ProcessedReceipt {
-    V1,
     V2,
-    Both,
     None,
 }
 
@@ -53,36 +46,24 @@ impl InnerContext {
         &self,
         buffer: Vec<(DatabaseReceipt, OneShotSender<Result<(), AdapterError>>)>,
     ) -> Result<ProcessedReceipt, ProcessReceiptError> {
-        let (v1_data, v2_data): (Vec<_>, Vec<_>) =
-            buffer
-                .into_iter()
-                .partition_map(|(receipt, sender)| match receipt {
-                    DatabaseReceipt::V1(receipt) => Either::Left((receipt, sender)),
-                    DatabaseReceipt::V2(receipt) => Either::Right((receipt, sender)),
-                });
+        // V2 (Horizon) only - V1/Legacy support has been removed
+        let (v2_receipts, v2_senders): (Vec<_>, Vec<_>) = buffer
+            .into_iter()
+            .map(|(receipt, sender)| {
+                let DatabaseReceipt::V2(r) = receipt;
+                (r, sender)
+            })
+            .unzip();
 
-        let (v1_receipts, v1_senders): (Vec<_>, Vec<_>) = v1_data.into_iter().unzip();
-        let (v2_receipts, v2_senders): (Vec<_>, Vec<_>) = v2_data.into_iter().unzip();
-
-        let (insert_v1, insert_v2) = tokio::join!(
-            self.store_receipts_v1(v1_receipts),
-            self.store_receipts_v2(v2_receipts),
-        );
+        let insert_v2 = self.store_receipts_v2(v2_receipts).await;
 
         // send back the result of storing receipts to callers
-        Self::notify_senders(v1_senders, &insert_v1, "V1");
         Self::notify_senders(v2_senders, &insert_v2, "V2");
 
-        match (insert_v1, insert_v2) {
-            (Err(e1), Err(e2)) => Err(ProcessReceiptError::Both(e1.into(), e2.into())),
-
-            (Err(e1), Ok(_)) => Err(ProcessReceiptError::V1(e1.into())),
-            (Ok(_), Err(e2)) => Err(ProcessReceiptError::V2(e2.into())),
-
-            (Ok(None), Ok(None)) => Ok(ProcessedReceipt::None),
-            (Ok(Some(_)), Ok(None)) => Ok(ProcessedReceipt::V1),
-            (Ok(None), Ok(Some(_))) => Ok(ProcessedReceipt::V2),
-            (Ok(Some(_)), Ok(Some(_))) => Ok(ProcessedReceipt::Both),
+        match insert_v2 {
+            Err(e2) => Err(ProcessReceiptError::V2(e2.into())),
+            Ok(None) => Ok(ProcessedReceipt::None),
+            Ok(Some(_)) => Ok(ProcessedReceipt::V2),
         }
     }
 
@@ -107,62 +88,6 @@ impl InnerContext {
                 }
             }
         }
-    }
-
-    async fn store_receipts_v1(
-        &self,
-        receipts: Vec<DbReceiptV1>,
-    ) -> Result<Option<u64>, AdapterError> {
-        if receipts.is_empty() {
-            return Ok(None);
-        }
-        let receipts_len = receipts.len();
-        let mut signers = Vec::with_capacity(receipts_len);
-        let mut signatures = Vec::with_capacity(receipts_len);
-        let mut allocation_ids = Vec::with_capacity(receipts_len);
-        let mut timestamps = Vec::with_capacity(receipts_len);
-        let mut nonces = Vec::with_capacity(receipts_len);
-        let mut values = Vec::with_capacity(receipts_len);
-
-        for receipt in receipts {
-            signers.push(receipt.signer_address);
-            signatures.push(receipt.signature);
-            allocation_ids.push(receipt.allocation_id);
-            timestamps.push(receipt.timestamp_ns);
-            nonces.push(receipt.nonce);
-            values.push(receipt.value);
-        }
-        let query_res = sqlx::query!(
-            r#"INSERT INTO scalar_tap_receipts (
-                signer_address,
-                signature,
-                allocation_id,
-                timestamp_ns,
-                nonce,
-                value
-            ) SELECT * FROM UNNEST(
-                $1::CHAR(40)[],
-                $2::BYTEA[],
-                $3::CHAR(40)[],
-                $4::NUMERIC(20)[],
-                $5::NUMERIC(20)[],
-                $6::NUMERIC(40)[]
-            )"#,
-            &signers,
-            &signatures,
-            &allocation_ids,
-            &timestamps,
-            &nonces,
-            &values,
-        )
-        .execute(&self.pgpool)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "Failed to store V1 receipt");
-            anyhow!(e)
-        })?;
-
-        Ok(Some(query_res.rows_affected()))
     }
 
     async fn store_receipts_v2(
@@ -266,10 +191,9 @@ impl ReceiptStore<TapReceipt> for IndexerTapContext {
     type AdapterError = AdapterError;
 
     async fn store_receipt(&self, receipt: CheckingReceipt) -> Result<u64, Self::AdapterError> {
-        let separator = match receipt.signed_receipt() {
-            TapReceipt::V1(_) => &self.domain_separator,
-            TapReceipt::V2(_) => &self.domain_separator_v2,
-        };
+        // V2 (Horizon) only - V1/Legacy support has been removed
+        let TapReceipt::V2(_) = receipt.signed_receipt();
+        let separator = &self.domain_separator_v2;
         let db_receipt = DatabaseReceipt::from_receipt(receipt, separator)?;
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         self.receipt_producer
@@ -287,56 +211,15 @@ impl ReceiptStore<TapReceipt> for IndexerTapContext {
     }
 }
 
+/// Database representation of a V2 receipt (V1/Legacy support has been removed)
 pub enum DatabaseReceipt {
-    V1(DbReceiptV1),
     V2(DbReceiptV2),
 }
 
 impl DatabaseReceipt {
     fn from_receipt(receipt: CheckingReceipt, separator: &Eip712Domain) -> anyhow::Result<Self> {
-        Ok(match receipt.signed_receipt() {
-            TapReceipt::V1(receipt) => Self::V1(DbReceiptV1::from_receipt(receipt, separator)?),
-            TapReceipt::V2(receipt) => Self::V2(DbReceiptV2::from_receipt(receipt, separator)?),
-        })
-    }
-}
-
-pub struct DbReceiptV1 {
-    signer_address: String,
-    signature: Vec<u8>,
-    allocation_id: String,
-    timestamp_ns: BigDecimal,
-    nonce: BigDecimal,
-    value: BigDecimal,
-}
-
-impl DbReceiptV1 {
-    fn from_receipt(
-        receipt: &tap_graph::SignedReceipt,
-        separator: &Eip712Domain,
-    ) -> anyhow::Result<Self> {
-        let allocation_id = receipt.message.allocation_id.encode_hex();
-        let signature = receipt.signature.as_bytes().to_vec();
-
-        let signer_address = receipt
-            .recover_signer(separator)
-            .map_err(|e| {
-                tracing::error!(error = %e, "Failed to recover receipt signer");
-                anyhow!(e)
-            })?
-            .encode_hex();
-
-        let timestamp_ns = BigDecimal::from(receipt.timestamp_ns());
-        let nonce = BigDecimal::from(receipt.message.nonce);
-        let value = BigDecimal::from(BigInt::from(receipt.value()));
-        Ok(Self {
-            allocation_id,
-            nonce,
-            signature,
-            signer_address,
-            timestamp_ns,
-            value,
-        })
+        let TapReceipt::V2(receipt) = receipt.signed_receipt();
+        Ok(Self::V2(DbReceiptV2::from_receipt(receipt, separator)?))
     }
 }
 
@@ -396,30 +279,14 @@ mod tests {
 
     use futures::future::BoxFuture;
     use sqlx::migrate::{MigrationSource, Migrator};
-    use test_assets::{
-        create_signed_receipt, create_signed_receipt_v2, SignedReceiptRequest, INDEXER_ALLOCATIONS,
-        TAP_EIP712_DOMAIN, TAP_EIP712_DOMAIN_V2,
-    };
+    use test_assets::{create_signed_receipt_v2, TAP_EIP712_DOMAIN_V2};
 
     use crate::tap::{
         receipt_store::{
-            DatabaseReceipt, DbReceiptV1, DbReceiptV2, InnerContext, ProcessReceiptError,
-            ProcessedReceipt,
+            DatabaseReceipt, DbReceiptV2, InnerContext, ProcessReceiptError, ProcessedReceipt,
         },
         AdapterError,
     };
-
-    async fn create_v1() -> DatabaseReceipt {
-        let alloc = INDEXER_ALLOCATIONS.values().next().unwrap().clone();
-        let v1 = create_signed_receipt(
-            SignedReceiptRequest::builder()
-                .allocation_id(alloc.id)
-                .value(100)
-                .build(),
-        )
-        .await;
-        DatabaseReceipt::V1(DbReceiptV1::from_receipt(&v1, &TAP_EIP712_DOMAIN).unwrap())
-    }
 
     async fn create_v2() -> DatabaseReceipt {
         let v2 = create_signed_receipt_v2().call().await;
@@ -448,11 +315,9 @@ mod tests {
 
         #[rstest::rstest]
         #[case(ProcessedReceipt::None, async { vec![] })]
-        #[case(ProcessedReceipt::V1, async { vec![create_v1().await] })]
         #[case(ProcessedReceipt::V2, async { vec![create_v2().await] })]
-        #[case(ProcessedReceipt::Both, async { vec![create_v2().await, create_v1().await] })]
         #[tokio::test]
-        async fn v1_and_v2_are_processed_successfully(
+        async fn v2_receipts_are_processed_successfully(
             #[case] expected: ProcessedReceipt,
             #[future(awt)]
             #[case]
@@ -489,33 +354,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_v1_receipts_are_processed_successfully() {
-            let migrator = create_migrator();
-            let test_db = test_assets::setup_test_db_with_migrator(migrator).await;
-            let context = InnerContext {
-                pgpool: test_db.pool,
-                tap_agent_tx: None,
-            };
-
-            let v1 = create_v1().await;
-
-            let receipts = vec![v1];
-            let (receipts, _rxs) = attach_oneshot_channels(receipts);
-
-            let res = context.process_db_receipts(receipts).await.unwrap();
-
-            assert_eq!(res, ProcessedReceipt::V1);
-        }
-
-        #[rstest::rstest]
-        #[case(async { vec![create_v2().await] })]
-        #[case(async { vec![create_v2().await, create_v1().await] })]
-        #[tokio::test]
-        async fn test_cases_with_v2_receipts_fails_to_process(
-            #[future(awt)]
-            #[case]
-            receipts: Vec<DatabaseReceipt>,
-        ) {
+        async fn test_v2_receipts_fails_to_process_without_horizon_table() {
             // Create a database without horizon migrations by running a custom migrator
             // that excludes horizon-related migrations
             let migrator = create_migrator();
@@ -526,12 +365,11 @@ mod tests {
                 tap_agent_tx: None,
             };
 
+            let receipts = vec![create_v2().await];
             let (receipts, _rxs) = attach_oneshot_channels(receipts);
             let error = context.process_db_receipts(receipts).await.unwrap_err();
 
-            let ProcessReceiptError::V2(error) = error else {
-                panic!()
-            };
+            let ProcessReceiptError::V2(error) = error;
             let d = error.downcast_ref::<AdapterError>().unwrap().to_string();
 
             assert_eq!(

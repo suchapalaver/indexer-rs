@@ -24,10 +24,7 @@ use prometheus::{
 use ractor::{Actor, ActorProcessingErr, ActorRef, MessagingErr, SupervisionEvent};
 use reqwest::Url;
 use sqlx::PgPool;
-use tap_aggregator::grpc::{
-    v1::tap_aggregator_client::TapAggregatorClient as AggregatorV1,
-    v2::tap_aggregator_client::TapAggregatorClient as AggregatorV2,
-};
+use tap_aggregator::grpc::v2::tap_aggregator_client::TapAggregatorClient as AggregatorV2;
 use thegraph_core::{
     alloy::{
         hex::ToHexExt,
@@ -50,7 +47,7 @@ use crate::{
     adaptative_concurrency::AdaptiveLimiter,
     agent::unaggregated_receipts::UnaggregatedReceipts,
     backoff::BackoffInfo,
-    tap::context::{Horizon, Legacy},
+    tap::context::Horizon,
     tracker::{SenderFeeTracker, SimpleFeeTracker},
 };
 
@@ -294,9 +291,6 @@ pub struct SenderAccountArgs {
     pub escrow_subgraph: &'static SubgraphClient,
     /// SubgraphClient of the network subgraph
     pub network_subgraph: &'static SubgraphClient,
-    /// Domain separator used for tap
-    pub domain_separator: Eip712Domain,
-    // TODO: check if we need this
     /// Domain separator used for horizon
     pub domain_separator_v2: Eip712Domain,
     /// Endpoint URL for aggregator server
@@ -374,21 +368,11 @@ pub struct State {
     /// SubgraphClient of the network subgraph
     network_subgraph: &'static SubgraphClient,
 
-    /// Domain separator used for tap
-    domain_separator: Eip712Domain,
     /// Domain separator used for horizon
     domain_separator_v2: Eip712Domain,
     /// Database connection
     pgpool: PgPool,
-    /// Aggregator client for V1
-    ///
-    /// This is only send to [SenderAllocation] in case
-    /// it's a [AllocationId::Legacy]
-    aggregator_v1: AggregatorV1<Channel>,
-    /// Aggregator client for V2
-    ///
-    /// This is only send to [SenderAllocation] in case
-    /// it's a [AllocationId::Horizon]
+    /// Aggregator client for V2 (Horizon)
     aggregator_v2: AggregatorV2<Channel>,
 
     // Used as a global backoff for triggering new rav requests
@@ -502,25 +486,11 @@ impl State {
         }
 
         match allocation_id {
-            AllocationId::Legacy(id) => {
-                let args = SenderAllocationArgs::builder()
-                    .pgpool(self.pgpool.clone())
-                    .allocation_id(id)
-                    .sender(self.sender)
-                    .escrow_accounts(self.escrow_accounts.clone())
-                    .escrow_subgraph(self.escrow_subgraph)
-                    .domain_separator(self.domain_separator.clone())
-                    .sender_account_ref(sender_account_ref.clone())
-                    .sender_aggregator(self.aggregator_v1.clone())
-                    .config(AllocationConfig::from_sender_config(self.config))
-                    .build();
-                SenderAllocation::<Legacy>::spawn_linked(
-                    Some(self.format_sender_allocation(&id)),
-                    SenderAllocation::default(),
-                    args,
-                    sender_account_ref.get_cell(),
-                )
-                .await?;
+            AllocationId::Legacy(_) => {
+                // V1/Legacy support has been removed
+                anyhow::bail!(
+                    "Legacy allocations are no longer supported. Use Horizon allocations."
+                );
             }
             AllocationId::Horizon(id) => {
                 let args = SenderAllocationArgs::builder()
@@ -846,7 +816,6 @@ impl Actor for SenderAccount {
             indexer_allocations,
             escrow_subgraph,
             network_subgraph,
-            domain_separator,
             domain_separator_v2,
             sender_aggregator_endpoint,
             allocation_ids,
@@ -926,10 +895,7 @@ impl Actor for SenderAccount {
                                 sender_id.encode_hex(),
                                 // service_provider is the indexer address; data_service comes from TapMode config
                                 config.indexer_address.encode_hex(),
-                                config
-                                    .tap_mode
-                                    .require_subgraph_service_address()
-                                    .encode_hex(),
+                                config.tap_mode.subgraph_service_address.encode_hex(),
                             )
                             .fetch_all(&pgpool)
                             .await
@@ -992,8 +958,7 @@ impl Actor for SenderAccount {
                             if !collection_ids.is_empty() {
                                 // For V2/Horizon: data_service must be the SubgraphService address to match
                                 // on-chain RAV lookups (service_provider is the indexer address)
-                                let data_service =
-                                    config.tap_mode.require_subgraph_service_address();
+                                let data_service = config.tap_mode.subgraph_service_address;
 
                                 match escrow_subgraph
                                     .query::<LatestRavs, _>(latest_ravs_v2::Variables {
@@ -1159,18 +1124,6 @@ impl Actor for SenderAccount {
         let endpoint = Endpoint::new(sender_aggregator_endpoint.to_string())
             .context("Failed to create an endpoint for the sender aggregator")?;
 
-        let aggregator_v1 = AggregatorV1::connect(endpoint.clone())
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to connect to the TapAggregator endpoint '{}'",
-                    endpoint.uri()
-                )
-            })?;
-        // wiremock_grpc used for tests doesn't support Zstd compression
-        #[cfg(not(test))]
-        let aggregator_v1 = aggregator_v1.send_compressed(tonic::codec::CompressionEncoding::Zstd);
-
         let aggregator_v2 = AggregatorV2::connect(endpoint.clone())
             .await
             .with_context(|| {
@@ -1222,10 +1175,8 @@ impl Actor for SenderAccount {
             escrow_accounts,
             escrow_subgraph,
             network_subgraph,
-            domain_separator,
             domain_separator_v2,
             pgpool,
-            aggregator_v1,
             aggregator_v2,
             backoff_info: BackoffInfo::default(),
             trusted_sender: config.trusted_senders.contains(&sender_id),

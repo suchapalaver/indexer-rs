@@ -1,7 +1,10 @@
 // Copyright 2023-, Edge & Node, GraphOps, and Semiotic Labs.
 // SPDX-License-Identifier: Apache-2.0
 
-use anyhow::anyhow;
+//! TAP receipt types for V2/Horizon protocol.
+//!
+//! V1/Legacy TAP support has been removed.
+
 use tap_core::{
     receipt::{
         rav::{Aggregate, AggregationError},
@@ -15,40 +18,18 @@ use thegraph_core::alloy::{
     signers::Signature,
 };
 
+/// A TAP receipt (V2/Horizon only).
+///
+/// V1/Legacy TAP support has been removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TapReceipt {
-    V1(tap_graph::SignedReceipt),
+    /// V2 (Horizon) receipt
     V2(tap_graph::v2::SignedReceipt),
 }
 
-impl Aggregate<TapReceipt> for tap_graph::ReceiptAggregateVoucher {
-    fn aggregate_receipts(
-        receipts: &[tap_core::receipt::ReceiptWithState<
-            tap_core::receipt::state::Checked,
-            TapReceipt,
-        >],
-        previous_rav: Option<tap_core::signed_message::Eip712SignedMessage<Self>>,
-    ) -> Result<Self, tap_core::receipt::rav::AggregationError> {
-        if receipts.is_empty() {
-            return Err(AggregationError::NoValidReceiptsForRavRequest);
-        }
-        let receipts: Vec<_> = receipts
-            .iter()
-            .map(|receipt| {
-                receipt
-                    .signed_receipt()
-                    .get_v1_receipt()
-                    .cloned()
-                    .ok_or(anyhow!("Receipt is not v1"))
-            })
-            .collect::<Result<_, _>>()
-            .map_err(AggregationError::Other)?;
-        let allocation_id = receipts[0].message.allocation_id;
-        tap_graph::ReceiptAggregateVoucher::aggregate_receipts(
-            allocation_id,
-            receipts.as_slice(),
-            previous_rav,
-        )
+impl From<tap_graph::v2::SignedReceipt> for TapReceipt {
+    fn from(receipt: tap_graph::v2::SignedReceipt) -> Self {
+        Self::V2(receipt)
     }
 }
 
@@ -66,14 +47,10 @@ impl Aggregate<TapReceipt> for tap_graph::v2::ReceiptAggregateVoucher {
         let receipts: Vec<_> = receipts
             .iter()
             .map(|receipt| {
-                receipt
-                    .signed_receipt()
-                    .get_v2_receipt()
-                    .cloned()
-                    .ok_or(anyhow!("Receipt is not v2"))
+                let TapReceipt::V2(r) = receipt.signed_receipt();
+                r.clone()
             })
-            .collect::<Result<_, _>>()
-            .map_err(AggregationError::Other)?;
+            .collect();
         let collection_id = receipts[0].message.collection_id;
         let payer = receipts[0].message.payer;
         let data_service = receipts[0].message.data_service;
@@ -91,86 +68,85 @@ impl Aggregate<TapReceipt> for tap_graph::v2::ReceiptAggregateVoucher {
 }
 
 impl TapReceipt {
-    pub fn as_v1(self) -> Option<tap_graph::SignedReceipt> {
-        match self {
-            TapReceipt::V1(receipt) => Some(receipt),
-            _ => None,
-        }
+    /// Get a reference to the inner V2 receipt.
+    pub fn inner(&self) -> &tap_graph::v2::SignedReceipt {
+        let Self::V2(receipt) = self;
+        receipt
     }
 
-    pub fn as_v2(self) -> Option<tap_graph::v2::SignedReceipt> {
-        match self {
-            TapReceipt::V2(receipt) => Some(receipt),
-            _ => None,
-        }
+    /// Consume and return the inner V2 receipt.
+    pub fn into_inner(self) -> tap_graph::v2::SignedReceipt {
+        let Self::V2(receipt) = self;
+        receipt
     }
 
-    pub fn get_v1_receipt(&self) -> Option<&tap_graph::SignedReceipt> {
-        match self {
-            TapReceipt::V1(receipt) => Some(receipt),
-            _ => None,
-        }
+    /// Consume and return the inner V2 receipt (alias for `into_inner`).
+    ///
+    /// This method provides a consistent API for extracting the V2 receipt.
+    pub fn as_v2(self) -> tap_graph::v2::SignedReceipt {
+        self.into_inner()
     }
 
-    pub fn get_v2_receipt(&self) -> Option<&tap_graph::v2::SignedReceipt> {
-        match self {
-            TapReceipt::V2(receipt) => Some(receipt),
-            _ => None,
-        }
+    /// Get a reference to the inner V2 receipt (alias for `inner`).
+    pub fn get_v2_receipt(&self) -> &tap_graph::v2::SignedReceipt {
+        self.inner()
     }
 
-    pub fn allocation_id(&self) -> Option<Address> {
-        match self {
-            TapReceipt::V1(receipt) => Some(receipt.message.allocation_id),
-            _ => None,
-        }
+    /// Get the collection ID from the receipt.
+    pub fn collection_id(&self) -> FixedBytes<32> {
+        let Self::V2(receipt) = self;
+        receipt.message.collection_id
     }
 
-    pub fn collection_id(&self) -> Option<FixedBytes<32>> {
-        match self {
-            TapReceipt::V2(receipt) => Some(receipt.message.collection_id),
-            _ => None,
-        }
+    /// Get the payer address from the receipt.
+    pub fn payer(&self) -> Address {
+        let Self::V2(receipt) = self;
+        receipt.message.payer
     }
 
+    /// Get the data service address from the receipt.
+    pub fn data_service(&self) -> Address {
+        let Self::V2(receipt) = self;
+        receipt.message.data_service
+    }
+
+    /// Get the service provider address from the receipt.
+    pub fn service_provider(&self) -> Address {
+        let Self::V2(receipt) = self;
+        receipt.message.service_provider
+    }
+
+    /// Get the signature from the receipt.
     pub fn signature(&self) -> Signature {
-        match self {
-            TapReceipt::V1(receipt) => receipt.signature,
-            TapReceipt::V2(receipt) => receipt.signature,
-        }
+        let Self::V2(receipt) = self;
+        receipt.signature
     }
 
+    /// Get the nonce from the receipt.
     pub fn nonce(&self) -> u64 {
-        match self {
-            TapReceipt::V1(receipt) => receipt.message.nonce,
-            TapReceipt::V2(receipt) => receipt.message.nonce,
-        }
+        let Self::V2(receipt) = self;
+        receipt.message.nonce
     }
 
+    /// Recover the signer address from the receipt signature.
     pub fn recover_signer(
         &self,
         domain_separator: &Eip712Domain,
     ) -> Result<Address, tap_core::signed_message::Eip712Error> {
-        match self {
-            TapReceipt::V1(receipt) => receipt.recover_signer(domain_separator),
-            TapReceipt::V2(receipt) => receipt.recover_signer(domain_separator),
-        }
+        let Self::V2(receipt) = self;
+        receipt.recover_signer(domain_separator)
     }
 }
 
 impl WithValueAndTimestamp for TapReceipt {
     fn value(&self) -> u128 {
-        match self {
-            TapReceipt::V1(receipt) => receipt.value(),
-            TapReceipt::V2(receipt) => receipt.value(),
-        }
+        let Self::V2(receipt) = self;
+        receipt.value()
     }
 
     fn timestamp_ns(&self) -> u64 {
-        match self {
-            TapReceipt::V1(receipt) => receipt.timestamp_ns(),
-            TapReceipt::V2(receipt) => receipt.timestamp_ns(),
-        }
+        let Self::V2(receipt) = self;
+        receipt.timestamp_ns()
     }
 }
 
@@ -178,9 +154,7 @@ impl WithUniqueId for TapReceipt {
     type Output = SignatureBytes;
 
     fn unique_id(&self) -> Self::Output {
-        match self {
-            TapReceipt::V1(receipt) => receipt.unique_id(),
-            TapReceipt::V2(receipt) => receipt.unique_id(),
-        }
+        let Self::V2(receipt) = self;
+        receipt.unique_id()
     }
 }

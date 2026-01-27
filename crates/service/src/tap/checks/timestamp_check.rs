@@ -57,9 +57,9 @@ mod tests {
         signed_message::Eip712SignedMessage,
         tap_eip712_domain,
     };
-    use tap_graph::Receipt;
+    use tap_graph::v2::Receipt;
     use thegraph_core::alloy::{
-        primitives::{address, Address},
+        primitives::{address, Address, FixedBytes},
         signers::local::{coins_bip39::English, MnemonicBuilder, PrivateKeySigner},
     };
 
@@ -75,13 +75,16 @@ mod tests {
             .build()
             .unwrap();
         let eip712_domain_separator: Eip712Domain =
-            tap_eip712_domain(1, Address::from([0x11u8; 20]), tap_core::TapVersion::V1);
+            tap_eip712_domain(1, Address::from([0x11u8; 20]), tap_core::TapVersion::V2);
         let value: u128 = 1234;
         let nonce: u64 = 10;
         let receipt = Eip712SignedMessage::new(
             &eip712_domain_separator,
             Receipt {
-                allocation_id: address!("abababababababababababababababababababab"),
+                payer: address!("abababababababababababababababababababab"),
+                data_service: Address::ZERO,
+                service_provider: address!("abababababababababababababababababababab"),
+                collection_id: FixedBytes::ZERO,
                 nonce,
                 timestamp_ns,
                 value,
@@ -89,7 +92,7 @@ mod tests {
             &wallet,
         )
         .unwrap();
-        CheckingReceipt::new(TapReceipt::V1(receipt))
+        CheckingReceipt::new(TapReceipt::V2(receipt))
     }
 
     #[tokio::test]

@@ -354,9 +354,7 @@ impl ServiceRouter {
                 deployment_to_allocation,
             };
             let sender_state = SenderState {
-                escrow_accounts_v1,
                 escrow_accounts_v2,
-                domain_separator: self.domain_separator,
                 domain_separator_v2: self.domain_separator_v2,
             };
 
