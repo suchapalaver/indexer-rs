@@ -88,6 +88,33 @@ pub enum ExecutorError {
     /// Allocation proof generation failed
     #[error("failed to generate allocation proof: {0}")]
     AllocationProof(String),
+
+    /// Allocation not found on-chain
+    #[error("allocation {allocation_id} not found")]
+    AllocationNotFound { allocation_id: Address },
+
+    /// Allocation is not active (already closed)
+    #[error("allocation {allocation_id} is not active (closed at block {closed_at})")]
+    AllocationNotActive {
+        allocation_id: Address,
+        closed_at: u64,
+    },
+
+    /// Allocation belongs to different indexer
+    #[error("allocation {allocation_id} belongs to indexer {actual_indexer}, expected {expected_indexer}")]
+    AllocationIndexerMismatch {
+        allocation_id: Address,
+        expected_indexer: Address,
+        actual_indexer: Address,
+    },
+
+    /// Allocation belongs to different deployment
+    #[error("allocation {allocation_id} is for deployment {actual_deployment}, expected {expected_deployment}")]
+    AllocationDeploymentMismatch {
+        allocation_id: Address,
+        expected_deployment: String,
+        actual_deployment: String,
+    },
 }
 
 /// Patterns that indicate a nonce-related error.
@@ -147,5 +174,57 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("network is paused"));
         assert!(message.contains("cannot submit transactions"));
+    }
+
+    #[test]
+    fn test_allocation_not_found_error() {
+        let allocation_id = Address::repeat_byte(0x33);
+        let error = ExecutorError::AllocationNotFound { allocation_id };
+        let message = error.to_string();
+        assert!(message.contains("0x3333333333333333333333333333333333333333"));
+        assert!(message.contains("not found"));
+    }
+
+    #[test]
+    fn test_allocation_not_active_error() {
+        let allocation_id = Address::repeat_byte(0x44);
+        let error = ExecutorError::AllocationNotActive {
+            allocation_id,
+            closed_at: 12345678,
+        };
+        let message = error.to_string();
+        assert!(message.contains("0x4444444444444444444444444444444444444444"));
+        assert!(message.contains("not active"));
+        assert!(message.contains("12345678"));
+    }
+
+    #[test]
+    fn test_allocation_indexer_mismatch_error() {
+        let allocation_id = Address::repeat_byte(0x55);
+        let expected_indexer = Address::repeat_byte(0x66);
+        let actual_indexer = Address::repeat_byte(0x77);
+        let error = ExecutorError::AllocationIndexerMismatch {
+            allocation_id,
+            expected_indexer,
+            actual_indexer,
+        };
+        let message = error.to_string();
+        assert!(message.contains("0x5555555555555555555555555555555555555555"));
+        assert!(message.contains("0x6666666666666666666666666666666666666666"));
+        assert!(message.contains("0x7777777777777777777777777777777777777777"));
+    }
+
+    #[test]
+    fn test_allocation_deployment_mismatch_error() {
+        let allocation_id = Address::repeat_byte(0x88);
+        let error = ExecutorError::AllocationDeploymentMismatch {
+            allocation_id,
+            expected_deployment: "0xabc123".to_string(),
+            actual_deployment: "0xdef456".to_string(),
+        };
+        let message = error.to_string();
+        assert!(message.contains("0x8888888888888888888888888888888888888888"));
+        assert!(message.contains("0xabc123"));
+        assert!(message.contains("0xdef456"));
     }
 }

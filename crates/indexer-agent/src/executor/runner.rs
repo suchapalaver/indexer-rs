@@ -346,6 +346,13 @@ impl ActionExecutor {
             .parse()
             .map_err(|e| ExecutorError::TransactionBuild(format!("invalid allocation ID: {e}")))?;
 
+        // Parse deployment ID for verification
+        let deployment_id = parse_deployment_id(&action.deployment_id)?;
+
+        // Verify allocation exists and is valid before building transaction
+        self.verify_allocation_exists(provider, allocation_id, Some(&deployment_id))
+            .await?;
+
         // Parse POI
         let poi = if let Some(poi_str) = &action.poi {
             poi_str
@@ -662,6 +669,95 @@ impl ActionExecutor {
         }
 
         debug!("Network pause check passed");
+        Ok(())
+    }
+
+    /// Verify that an allocation exists and is in a valid state for unallocation.
+    ///
+    /// This check ensures that:
+    /// 1. The allocation exists on-chain (indexer is not zero address)
+    /// 2. The allocation is active (closedAt == 0)
+    /// 3. The allocation belongs to the expected indexer
+    /// 4. The allocation is for the expected deployment (if provided)
+    ///
+    /// This prevents wasted gas on transactions that would definitely revert, and
+    /// provides clearer error messages than contract reverts.
+    async fn verify_allocation_exists(
+        &self,
+        provider: &ExecutorProvider,
+        allocation_id: Address,
+        expected_deployment: Option<&FixedBytes<32>>,
+    ) -> Result<(), ExecutorError> {
+        let subgraph_service = SubgraphService::new(self.config.subgraph_service_address, provider);
+
+        let allocation = subgraph_service
+            .getAllocation(allocation_id)
+            .call()
+            .await
+            .map_err(|e| ExecutorError::ContractCall(format!("getAllocation failed: {e}")))?;
+
+        // Check if allocation exists (zero indexer means not found)
+        if allocation.indexer == Address::ZERO {
+            warn!(
+                allocation_id = %allocation_id,
+                "Allocation not found on-chain"
+            );
+            return Err(ExecutorError::AllocationNotFound { allocation_id });
+        }
+
+        // Check if allocation is active (closedAt == 0 means active)
+        if !allocation.closedAt.is_zero() {
+            let closed_at: u64 = allocation.closedAt.try_into().unwrap_or(0);
+            warn!(
+                allocation_id = %allocation_id,
+                closed_at = closed_at,
+                "Allocation is not active (already closed)"
+            );
+            return Err(ExecutorError::AllocationNotActive {
+                allocation_id,
+                closed_at,
+            });
+        }
+
+        // Check indexer matches
+        if allocation.indexer != self.config.indexer_address {
+            warn!(
+                allocation_id = %allocation_id,
+                expected_indexer = %self.config.indexer_address,
+                actual_indexer = %allocation.indexer,
+                "Allocation belongs to different indexer"
+            );
+            return Err(ExecutorError::AllocationIndexerMismatch {
+                allocation_id,
+                expected_indexer: self.config.indexer_address,
+                actual_indexer: allocation.indexer,
+            });
+        }
+
+        // Check deployment matches (if expected deployment provided)
+        if let Some(expected) = expected_deployment {
+            if allocation.subgraphDeploymentId != *expected {
+                warn!(
+                    allocation_id = %allocation_id,
+                    expected_deployment = %expected,
+                    actual_deployment = %allocation.subgraphDeploymentId,
+                    "Allocation is for different deployment"
+                );
+                return Err(ExecutorError::AllocationDeploymentMismatch {
+                    allocation_id,
+                    expected_deployment: format!("{expected}"),
+                    actual_deployment: format!("{}", allocation.subgraphDeploymentId),
+                });
+            }
+        }
+
+        debug!(
+            allocation_id = %allocation_id,
+            indexer = %allocation.indexer,
+            deployment = %allocation.subgraphDeploymentId,
+            "Allocation verification passed"
+        );
+
         Ok(())
     }
 }
