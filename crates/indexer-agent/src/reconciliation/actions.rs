@@ -7,7 +7,7 @@ use sqlx::PgPool;
 use tracing::{debug, info};
 
 use crate::{
-    models::{Action, ActionInput, ActionType},
+    models::{Action, ActionError, ActionInput, ActionType},
     rules::AllocationDecision,
 };
 
@@ -79,7 +79,19 @@ pub async fn queue_allocation_action(
         poi_block_number: None,
     };
 
-    let action = Action::queue(pool, input).await?;
+    let action = match Action::queue(pool, input).await {
+        Ok(action) => action,
+        Err(ActionError::DuplicatePendingAction { deployment_id }) => {
+            // Database constraint caught a race condition - another action was queued
+            // between our pre-check and insert. This is expected and not an error.
+            debug!(
+                deployment = %deployment_id,
+                "Action already pending for deployment (constraint), skipping"
+            );
+            return Ok(None);
+        }
+        Err(ActionError::Database(e)) => return Err(e),
+    };
 
     // Auto-approve if in AUTO mode
     if auto_approve {
@@ -140,7 +152,18 @@ pub async fn queue_unallocation_action(
         poi_block_number: None,
     };
 
-    let action = Action::queue(pool, input).await?;
+    let action = match Action::queue(pool, input).await {
+        Ok(action) => action,
+        Err(ActionError::DuplicatePendingAction { deployment_id }) => {
+            debug!(
+                deployment = %deployment_id,
+                allocation = %allocation_id,
+                "Action already pending for deployment (constraint), skipping"
+            );
+            return Ok(None);
+        }
+        Err(ActionError::Database(e)) => return Err(e),
+    };
 
     // Auto-approve if in AUTO mode
     if auto_approve {
@@ -201,7 +224,18 @@ pub async fn queue_reallocation_action(
         poi_block_number: None,
     };
 
-    let action = Action::queue(pool, input).await?;
+    let action = match Action::queue(pool, input).await {
+        Ok(action) => action,
+        Err(ActionError::DuplicatePendingAction { deployment_id }) => {
+            debug!(
+                deployment = %deployment_id,
+                allocation = %allocation_id,
+                "Action already pending for deployment (constraint), skipping"
+            );
+            return Ok(None);
+        }
+        Err(ActionError::Database(e)) => return Err(e),
+    };
 
     // Auto-approve if in AUTO mode
     if auto_approve {

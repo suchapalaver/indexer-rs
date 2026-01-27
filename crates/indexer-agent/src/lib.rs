@@ -21,7 +21,7 @@ pub use executor::{
     ProviderCache, SubgraphServiceContract,
 };
 pub use models::{
-    Action, ActionFilter, ActionInput, ActionStatus, ActionType, IdentifierType,
+    Action, ActionError, ActionFilter, ActionInput, ActionStatus, ActionType, IdentifierType,
     IndexingDecisionBasis, IndexingRule, IndexingRuleInput, POIDispute, POIDisputeInput,
 };
 pub use reconciliation::{

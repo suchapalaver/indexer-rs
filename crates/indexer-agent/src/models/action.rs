@@ -3,6 +3,22 @@
 
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool, Type};
+use thiserror::Error;
+
+/// Errors that can occur when working with actions.
+#[derive(Debug, Error)]
+pub enum ActionError {
+    /// A non-terminal action already exists for this deployment.
+    ///
+    /// This occurs when attempting to queue an action for a deployment that
+    /// already has a pending action (queued, approved, pending, or deploying).
+    #[error("action already pending for deployment {deployment_id}")]
+    DuplicatePendingAction { deployment_id: String },
+
+    /// Database error.
+    #[error("database error: {0}")]
+    Database(#[from] sqlx::Error),
+}
 
 /// Type of allocation action
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -81,9 +97,17 @@ pub struct ActionFilter {
     pub protocol_network: Option<String>,
 }
 
+/// Name of the partial unique index for duplicate action prevention.
+const DUPLICATE_ACTION_INDEX: &str = "idx_one_pending_action_per_deployment";
+
 impl Action {
-    /// Queue a new action
-    pub async fn queue(pool: &PgPool, input: ActionInput) -> Result<Self, sqlx::Error> {
+    /// Queue a new action.
+    ///
+    /// Returns `ActionError::DuplicatePendingAction` if a non-terminal action
+    /// already exists for this deployment (enforced by database constraint).
+    pub async fn queue(pool: &PgPool, input: ActionInput) -> Result<Self, ActionError> {
+        let deployment_id = input.deployment_id.clone();
+
         sqlx::query_as::<_, Self>(
             r#"
             INSERT INTO "Actions" (
@@ -124,6 +148,14 @@ impl Action {
         .bind(input.poi_block_number)
         .fetch_one(pool)
         .await
+        .map_err(|e| {
+            // Check if this is a unique constraint violation from our index
+            if e.to_string().contains(DUPLICATE_ACTION_INDEX) {
+                ActionError::DuplicatePendingAction { deployment_id }
+            } else {
+                ActionError::Database(e)
+            }
+        })
     }
 
     /// Get an action by ID and protocol network
@@ -310,5 +342,28 @@ impl Action {
         .await?;
 
         Ok(result.rows_affected())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_action_error_duplicate_pending() {
+        let error = ActionError::DuplicatePendingAction {
+            deployment_id: "Qm123abc".to_string(),
+        };
+        assert_eq!(
+            error.to_string(),
+            "action already pending for deployment Qm123abc"
+        );
+    }
+
+    #[test]
+    fn test_action_error_database() {
+        // ActionError::Database wraps sqlx::Error, which we can't easily construct
+        // in a unit test, but we verify the From impl exists by checking the type
+        let _: fn(sqlx::Error) -> ActionError = ActionError::from;
     }
 }
