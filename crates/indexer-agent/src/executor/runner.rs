@@ -19,7 +19,7 @@ use tokio::{sync::watch, time::interval};
 use tracing::{debug, error, info, warn};
 
 use super::{
-    contracts::{HorizonStaking, SubgraphService},
+    contracts::{Controller, HorizonStaking, SubgraphService},
     errors::{is_nonce_error, ExecutorError},
     provider::{ExecutorProvider, ProviderCache},
     transactions::{build_allocate_tx, build_unallocate_tx, parse_amount, GAS_BUFFER_PERCENT},
@@ -47,6 +47,9 @@ pub struct ExecutorConfig {
     /// Address of the HorizonStaking contract (for authorization checks)
     pub horizon_staking_address: Address,
 
+    /// Address of the Controller contract (for pause checks)
+    pub controller_address: Address,
+
     /// The indexer's address
     pub indexer_address: Address,
 
@@ -66,6 +69,7 @@ impl Default for ExecutorConfig {
             execution_interval: Duration::from_secs(30),
             subgraph_service_address: Address::ZERO,
             horizon_staking_address: Address::ZERO,
+            controller_address: Address::ZERO,
             indexer_address: Address::ZERO,
             protocol_network: String::new(),
             chain_id: 0,
@@ -397,6 +401,9 @@ impl ActionExecutor {
         provider: &ExecutorProvider,
         calldata: Bytes,
     ) -> Result<String, ExecutorError> {
+        // Check if network is paused before submitting
+        self.check_network_paused(provider).await?;
+
         let signer_address = self.signer.address();
 
         // Build transaction request
@@ -632,6 +639,31 @@ impl ActionExecutor {
 
         Ok(())
     }
+
+    /// Check if the network is paused.
+    ///
+    /// Queries the Controller contract to determine if the protocol is currently paused.
+    /// When paused, no state-changing transactions should be submitted as they will fail.
+    ///
+    /// This check is performed before each transaction submission to ensure we don't
+    /// waste gas on transactions that will definitely fail.
+    async fn check_network_paused(&self, provider: &ExecutorProvider) -> Result<(), ExecutorError> {
+        let controller = Controller::new(self.config.controller_address, provider);
+
+        let paused = controller
+            .paused()
+            .call()
+            .await
+            .map_err(|e| ExecutorError::ContractCall(format!("paused check failed: {e}")))?;
+
+        if paused {
+            warn!("Network is paused, cannot submit transactions");
+            return Err(ExecutorError::NetworkPaused);
+        }
+
+        debug!("Network pause check passed");
+        Ok(())
+    }
 }
 
 /// Parse a deployment ID from IPFS hash or bytes32 format.
@@ -658,6 +690,7 @@ mod tests {
         assert_eq!(config.execution_interval, Duration::from_secs(30));
         assert_eq!(config.subgraph_service_address, Address::ZERO);
         assert_eq!(config.horizon_staking_address, Address::ZERO);
+        assert_eq!(config.controller_address, Address::ZERO);
         assert_eq!(config.indexer_address, Address::ZERO);
     }
 

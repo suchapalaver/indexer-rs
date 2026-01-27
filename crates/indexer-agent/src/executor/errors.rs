@@ -17,6 +17,10 @@ pub enum ExecutorError {
     #[error("operator {operator} is not authorized for indexer {indexer}")]
     UnauthorizedOperator { indexer: Address, operator: Address },
 
+    /// Network is paused, no transactions allowed
+    #[error("network is paused, cannot submit transactions")]
+    NetworkPaused,
+
     /// Action is not in approved state
     #[error("action {action_id} is not approved, status: {status}")]
     ActionNotApproved { action_id: i32, status: String },
@@ -135,5 +139,13 @@ mod tests {
         assert!(message.contains("0x1111111111111111111111111111111111111111"));
         assert!(message.contains("0x2222222222222222222222222222222222222222"));
         assert!(message.contains("not authorized"));
+    }
+
+    #[test]
+    fn test_network_paused_error() {
+        let error = ExecutorError::NetworkPaused;
+        let message = error.to_string();
+        assert!(message.contains("network is paused"));
+        assert!(message.contains("cannot submit transactions"));
     }
 }

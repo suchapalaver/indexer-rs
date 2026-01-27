@@ -169,9 +169,28 @@ impl From<PaymentType> for u8 {
     }
 }
 
+sol! {
+    /// Controller contract for network pause state.
+    ///
+    /// The Controller is the central coordination contract for The Graph protocol.
+    /// Among its responsibilities, it tracks whether the protocol is paused.
+    /// When paused, no state-changing transactions should be submitted.
+    #[sol(rpc)]
+    contract Controller {
+        /// Check if the protocol is paused.
+        ///
+        /// # Returns
+        /// * `bool` - True if the protocol is currently paused
+        function paused() external view returns (bool);
+    }
+}
+
 /// Re-export contract types for external use.
 pub use HorizonStaking as HorizonStakingContract;
 pub use SubgraphService as SubgraphServiceContract;
+
+// Note: Controller is used internally but not re-exported as ControllerContract
+// since external crates don't need to interact with it directly.
 
 #[cfg(test)]
 mod tests {
