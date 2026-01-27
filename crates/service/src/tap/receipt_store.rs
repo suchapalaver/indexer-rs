@@ -3,6 +3,7 @@
 
 use anyhow::anyhow;
 use bigdecimal::num_bigint::BigInt;
+use indexer_tap_agent::agent::sender_accounts_manager::ChannelReceiptNotification;
 use itertools::{Either, Itertools};
 use sqlx::{types::BigDecimal, PgPool};
 use tap_core::{manager::adapters::ReceiptStore, receipt::WithValueAndTimestamp};
@@ -18,6 +19,13 @@ use super::{AdapterError, CheckingReceipt, IndexerTapContext, TapReceipt};
 #[derive(Clone)]
 pub struct InnerContext {
     pub pgpool: PgPool,
+    /// Optional channel to send receipt notifications to TAP agent (unified binary mode).
+    ///
+    /// When set, receipt notifications will be sent through this channel after storage,
+    /// enabling faster processing than pg_notify. Currently unused pending implementation
+    /// of receipt ID retrieval from bulk INSERT (pg_notify will be used as fallback).
+    #[allow(dead_code)]
+    pub tap_agent_tx: Option<tokio::sync::mpsc::Sender<ChannelReceiptNotification>>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -453,6 +461,7 @@ mod tests {
             let test_db = test_assets::setup_shared_test_db().await;
             let context = InnerContext {
                 pgpool: test_db.pool,
+                tap_agent_tx: None,
             };
             let (receipts, _rxs) = attach_oneshot_channels(receipts);
 
@@ -471,6 +480,7 @@ mod tests {
             let test_db = test_assets::setup_test_db_with_migrator(migrator).await;
             let context = InnerContext {
                 pgpool: test_db.pool,
+                tap_agent_tx: None,
             };
 
             let res = context.process_db_receipts(vec![]).await.unwrap();
@@ -484,6 +494,7 @@ mod tests {
             let test_db = test_assets::setup_test_db_with_migrator(migrator).await;
             let context = InnerContext {
                 pgpool: test_db.pool,
+                tap_agent_tx: None,
             };
 
             let v1 = create_v1().await;
@@ -512,6 +523,7 @@ mod tests {
 
             let context = InnerContext {
                 pgpool: test_db.pool,
+                tap_agent_tx: None,
             };
 
             let (receipts, _rxs) = attach_oneshot_channels(receipts);

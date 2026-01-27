@@ -26,7 +26,7 @@ use tokio::{net::TcpListener, signal};
 use tower_http::normalize_path::NormalizePath;
 use tracing::info;
 
-use crate::{cli::Cli, database, metrics::serve_metrics};
+use crate::{cli::Cli, database, metrics::serve_metrics, tap_agent};
 
 mod release;
 mod router;
@@ -178,29 +178,28 @@ pub async fn run() -> anyhow::Result<()> {
         false
     };
 
-    // Configure router with escrow watchers based on automatic Horizon detection
-    let router = if is_horizon_active {
-        tracing::info!("Horizon contracts detected - using Horizon migration mode: V2 receipts only, but processing existing V1 receipts");
+    // Create escrow subgraph client (used for V1 escrow accounts)
+    let escrow_subgraph_v1 = create_subgraph_client(
+        http_client.clone(),
+        &config.graph_node,
+        &config.subgraphs.escrow.config,
+    )
+    .await;
 
-        // Create V1 escrow watcher for processing existing receipts
-        let escrow_subgraph_v1 = create_subgraph_client(
-            http_client.clone(),
-            &config.graph_node,
-            &config.subgraphs.escrow.config,
-        )
-        .await;
+    // Create V1 escrow watcher (always needed for processing existing receipts)
+    let v1_watcher = indexer_monitor::escrow_accounts_v1(
+        escrow_subgraph_v1,
+        indexer_address,
+        config.subgraphs.escrow.config.syncing_interval_secs,
+        true, // Reject thawing signers eagerly
+    )
+    .await
+    .with_context(|| "Error creating escrow_accounts_v1 channel")?;
 
-        let v1_watcher = indexer_monitor::escrow_accounts_v1(
-            escrow_subgraph_v1,
-            indexer_address,
-            config.subgraphs.escrow.config.syncing_interval_secs,
-            true, // Reject thawing signers eagerly
-        )
-        .await
-        .with_context(|| "Error creating escrow_accounts_v1 channel")?;
-
-        // Create V2 escrow watcher for new receipts (V2 escrow accounts are in the network subgraph)
-        let v2_watcher = match indexer_monitor::escrow_accounts_v2(
+    // Create V2 escrow watcher if Horizon is active
+    let v2_watcher = if is_horizon_active {
+        tracing::info!("Horizon contracts detected - creating V2 escrow watcher");
+        match indexer_monitor::escrow_accounts_v2(
             network_subgraph,
             indexer_address,
             config.subgraphs.network.config.syncing_interval_secs,
@@ -210,7 +209,7 @@ pub async fn run() -> anyhow::Result<()> {
         {
             Ok(watcher) => {
                 tracing::info!("V2 escrow accounts successfully initialized from network subgraph");
-                watcher
+                Some(watcher)
             }
             Err(e) => {
                 tracing::error!(
@@ -219,7 +218,70 @@ pub async fn run() -> anyhow::Result<()> {
                 );
                 std::process::exit(1);
             }
-        };
+        }
+    } else {
+        tracing::info!("No Horizon contracts detected - using Legacy (V1) mode only");
+        None
+    };
+
+    // Clone watchers for TAP agent (if it will be enabled)
+    let v1_watcher_for_tap = v1_watcher.clone();
+    let v2_watcher_for_tap = v2_watcher.clone();
+
+    // Start TAP agent if enabled in unified binary mode
+    // Must be started before router creation since router consumes some config fields
+    // Note: The handle is kept alive for the duration of the service. When the service
+    // shuts down, dropping the handle will close the notification channel, signaling
+    // the TAP agent to stop gracefully.
+    let _tap_agent_handle = if config.agent.tap_agent_enabled {
+        tracing::info!("Starting integrated TAP agent (unified binary mode)");
+
+        // Create escrow subgraph for TAP agent (separate reference since it's leaked)
+        let escrow_subgraph_for_tap = create_subgraph_client(
+            reqwest::Client::new(),
+            &config.graph_node,
+            &config.subgraphs.escrow.config,
+        )
+        .await;
+
+        // For V2, TAP agent also needs an empty watcher if Horizon is not active
+        let v2_watcher_for_tap_final =
+            v2_watcher_for_tap.unwrap_or_else(indexer_monitor::empty_escrow_accounts_watcher);
+
+        match tap_agent::start_tap_agent(
+            &config,
+            database.clone(),
+            network_subgraph,
+            escrow_subgraph_for_tap,
+            v1_watcher_for_tap,
+            v2_watcher_for_tap_final,
+            domain_separator.clone(),
+            domain_separator_v2.clone(),
+            is_horizon_active,
+        )
+        .await
+        {
+            Ok(handle) => {
+                tracing::info!("TAP agent started successfully");
+                Some(handle)
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to start TAP agent");
+                return Err(e);
+            }
+        }
+    } else {
+        // Drop the unused watchers
+        drop(v1_watcher_for_tap);
+        drop(v2_watcher_for_tap);
+        None
+    };
+
+    // Configure router with escrow watchers
+    let router = if let Some(v2_watcher) = v2_watcher {
+        tracing::info!(
+            "Horizon migration mode: V2 receipts only, but processing existing V1 receipts"
+        );
 
         ServiceRouter::builder()
             .database(database.clone())
@@ -237,26 +299,6 @@ pub async fn run() -> anyhow::Result<()> {
             .escrow_accounts_v2(v2_watcher)
             .build()
     } else {
-        tracing::info!(
-            "No Horizon contracts detected - using Legacy (V1) mode with escrow accounts v1 only"
-        );
-        // Only create v1 watcher for legacy mode
-        let escrow_subgraph_v1 = create_subgraph_client(
-            http_client.clone(),
-            &config.graph_node,
-            &config.subgraphs.escrow.config,
-        )
-        .await;
-
-        let v1_watcher = indexer_monitor::escrow_accounts_v1(
-            escrow_subgraph_v1,
-            indexer_address,
-            config.subgraphs.escrow.config.syncing_interval_secs,
-            true, // Reject thawing signers eagerly
-        )
-        .await
-        .with_context(|| "Error creating escrow_accounts_v1 channel")?;
-
         ServiceRouter::builder()
             .database(database.clone())
             .domain_separator(domain_separator.clone())

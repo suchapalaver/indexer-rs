@@ -9,6 +9,7 @@ mod middleware;
 mod routes;
 pub mod service;
 mod tap;
+pub mod tap_agent;
 mod wallet;
 
 pub use middleware::QueryBody;

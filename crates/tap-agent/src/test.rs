@@ -276,6 +276,8 @@ pub async fn create_sender_accounts_manager(
             (SENDER_2.1, Url::parse("http://localhost:8000").unwrap()),
         ]),
         prefix: Some(prefix.clone()),
+        // Tests use pg_notify only, no channel
+        receipt_notification_rx: None,
     };
     let (sender, receiver) = mpsc::channel(100);
     let actor = TestableActor::new(SenderAccountsManager, sender);

@@ -110,6 +110,8 @@ pub async fn start_agent(
         network_subgraph,
         sender_aggregator_endpoints: sender_aggregator_endpoints.clone(),
         prefix: None,
+        // Tests use pg_notify only, no channel
+        receipt_notification_rx: None,
     };
 
     let (sender, receiver) = mpsc::channel(10);

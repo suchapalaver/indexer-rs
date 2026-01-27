@@ -275,9 +275,120 @@ pub async fn start_agent(
         network_subgraph,
         sender_aggregator_endpoints: sender_aggregator_endpoints.clone(),
         prefix: None,
+        // Standalone tap-agent binary uses pg_notify only, no channel
+        receipt_notification_rx: None,
     };
 
     Ok(SenderAccountsManager::spawn(None, SenderAccountsManager, args).await?)
+}
+
+/// Arguments for starting the TAP agent with pre-created dependencies.
+///
+/// This allows the service to share resources (database pool, watchers, etc.)
+/// with the TAP agent instead of creating them independently.
+pub struct StartAgentArgs {
+    /// Database connection pool (shared with service)
+    pub pgpool: sqlx::PgPool,
+    /// Network subgraph client (leaked static reference)
+    pub network_subgraph: &'static SubgraphClient,
+    /// Escrow subgraph client (leaked static reference)
+    pub escrow_subgraph: &'static SubgraphClient,
+    /// Indexer allocations watcher
+    pub indexer_allocations: tokio::sync::watch::Receiver<
+        std::collections::HashMap<
+            thegraph_core::alloy::primitives::Address,
+            indexer_allocation::Allocation,
+        >,
+    >,
+    /// V1 escrow accounts watcher
+    pub escrow_accounts_v1: tokio::sync::watch::Receiver<indexer_monitor::EscrowAccounts>,
+    /// V2 escrow accounts watcher
+    pub escrow_accounts_v2: tokio::sync::watch::Receiver<indexer_monitor::EscrowAccounts>,
+    /// EIP-712 domain separator for V1
+    pub domain_separator: thegraph_core::alloy::sol_types::Eip712Domain,
+    /// EIP-712 domain separator for V2
+    pub domain_separator_v2: thegraph_core::alloy::sol_types::Eip712Domain,
+    /// Sender account configuration
+    pub config: SenderAccountConfig,
+    /// Sender aggregator endpoints
+    pub sender_aggregator_endpoints:
+        std::collections::HashMap<thegraph_core::alloy::primitives::Address, reqwest::Url>,
+    /// Whether Horizon mode is enabled
+    pub is_horizon_enabled: bool,
+    /// Optional prefix for actor names (useful for testing)
+    pub prefix: Option<String>,
+    /// Optional channel receiver for receipt notifications from the service.
+    ///
+    /// When provided, the manager will listen for notifications from this channel
+    /// in addition to pg_notify. This enables direct notification from the service
+    /// in the unified binary, reducing latency and database load.
+    pub receipt_notification_rx:
+        Option<tokio::sync::mpsc::Receiver<sender_accounts_manager::ChannelReceiptNotification>>,
+}
+
+/// Start the TAP agent with pre-created dependencies.
+///
+/// This is the entry point for the unified binary where the service shares
+/// resources with the TAP agent. Unlike [start_agent], this function accepts
+/// all dependencies as parameters rather than creating them from the global CONFIG.
+///
+/// # Arguments
+///
+/// * `args` - Pre-created dependencies and configuration
+///
+/// # Returns
+///
+/// A tuple containing:
+/// - Actor reference to the SenderAccountsManager for sending messages
+/// - JoinHandle that completes when the agent stops
+pub async fn start_agent_with_deps(
+    args: StartAgentArgs,
+) -> anyhow::Result<(
+    ActorRef<SenderAccountsManagerMessage>,
+    ractor::concurrency::JoinHandle<()>,
+)> {
+    let StartAgentArgs {
+        pgpool,
+        network_subgraph,
+        escrow_subgraph,
+        indexer_allocations,
+        escrow_accounts_v1,
+        escrow_accounts_v2,
+        domain_separator,
+        domain_separator_v2,
+        config,
+        sender_aggregator_endpoints,
+        is_horizon_enabled,
+        prefix,
+        receipt_notification_rx,
+    } = args;
+
+    // Leak the config to get a static reference (matches existing pattern)
+    let config = Box::leak(Box::new(if is_horizon_enabled {
+        config
+    } else {
+        // Override to Legacy mode if horizon is not active
+        let mut config = config;
+        config.tap_mode = indexer_config::TapMode::Legacy;
+        config
+    }));
+
+    let manager_args = SenderAccountsManagerArgs {
+        config,
+        domain_separator,
+        domain_separator_v2,
+        pgpool,
+        indexer_allocations,
+        escrow_accounts_v1,
+        escrow_accounts_v2,
+        escrow_subgraph,
+        network_subgraph,
+        sender_aggregator_endpoints,
+        prefix,
+        receipt_notification_rx,
+    };
+
+    Ok(SenderAccountsManager::spawn(None, SenderAccountsManager, manager_args).await?)
 }
 
 #[cfg(test)]

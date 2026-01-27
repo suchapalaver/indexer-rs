@@ -912,6 +912,14 @@ pub struct AgentConfig {
     /// Executor configuration
     #[serde(default)]
     pub executor: ExecutorAgentConfig,
+
+    /// Enable integrated TAP agent (receipt aggregation) in the unified binary.
+    ///
+    /// When enabled, TAP agent actors run within the service process and receive
+    /// receipt notifications directly via channel, avoiding the pg_notify round-trip.
+    /// This requires the standalone tap-agent process to NOT be running.
+    #[serde(default)]
+    pub tap_agent_enabled: bool,
 }
 
 /// Configuration for the action executor

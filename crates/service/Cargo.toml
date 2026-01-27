@@ -15,6 +15,7 @@ indexer-dips = { path = "../dips" }
 indexer-management-api = { path = "../indexer-management-api" }
 indexer-query = { path = "../query" }
 indexer-receipt = { path = "../indexer-receipt" }
+indexer-tap-agent = { path = "../tap-agent" }
 profiler = { path = "../profiler", optional = true }
 anyhow = { workspace = true }
 prometheus = { workspace = true }
@@ -64,6 +65,7 @@ pin-project = "1.1.7"
 tonic.workspace = true
 itertools = "0.14.0"
 graph-networks-registry.workspace = true
+ractor.workspace = true
 
 
 [dev-dependencies]

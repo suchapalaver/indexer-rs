@@ -15,11 +15,14 @@ use tokio::sync::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::tap::checks::{
-    allocation_eligible::AllocationEligible, data_service_check::DataServiceCheck,
-    deny_list_check::DenyListCheck, payer_check::PayerCheck,
-    receipt_max_val_check::ReceiptMaxValueCheck, sender_balance_check::SenderBalanceCheck,
-    timestamp_check::TimestampCheck, value_check::MinimumValue,
+use crate::{
+    tap::checks::{
+        allocation_eligible::AllocationEligible, data_service_check::DataServiceCheck,
+        deny_list_check::DenyListCheck, payer_check::PayerCheck,
+        receipt_max_val_check::ReceiptMaxValueCheck, sender_balance_check::SenderBalanceCheck,
+        timestamp_check::TimestampCheck, value_check::MinimumValue,
+    },
+    tap_agent::TapAgentHandle,
 };
 
 mod checks;
@@ -91,10 +94,27 @@ impl IndexerTapContext {
         domain_separator: Eip712Domain,
         domain_separator_v2: Eip712Domain,
     ) -> Self {
+        Self::new_with_tap_agent(pgpool, domain_separator, domain_separator_v2, None).await
+    }
+
+    /// Create a new IndexerTapContext with optional TAP agent notification channel.
+    ///
+    /// When a TAP agent handle is provided, receipt notifications will be sent
+    /// directly to the TAP agent through the channel after storage, enabling
+    /// faster processing than pg_notify in the unified binary mode.
+    pub async fn new_with_tap_agent(
+        pgpool: PgPool,
+        domain_separator: Eip712Domain,
+        domain_separator_v2: Eip712Domain,
+        tap_agent: Option<&TapAgentHandle>,
+    ) -> Self {
         const MAX_RECEIPT_QUEUE_SIZE: usize = 1000;
         let (tx, rx) = mpsc::channel(MAX_RECEIPT_QUEUE_SIZE);
         let cancelation_token = CancellationToken::new();
-        let inner = InnerContext { pgpool };
+        let inner = InnerContext {
+            pgpool,
+            tap_agent_tx: tap_agent.map(|h| h.notification_tx.clone()),
+        };
         Self::spawn_store_receipt_task(inner, rx, cancelation_token.clone());
 
         Self {

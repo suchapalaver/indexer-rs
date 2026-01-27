@@ -285,6 +285,19 @@ pub enum SenderAccountsManagerMessage {
     UpdateSenderAccountsV2(HashSet<Address>),
 }
 
+/// Receipt notification that can be sent through a channel from the service.
+///
+/// This is an alternative to pg_notify for the unified binary where the service
+/// can directly notify the TAP agent about new receipts without going through
+/// the database notification channel.
+#[derive(Debug, Clone)]
+pub struct ChannelReceiptNotification {
+    /// The receipt notification (V1 or V2)
+    pub notification: NewReceiptNotification,
+    /// Whether this is a V1 (Legacy) or V2 (Horizon) sender
+    pub sender_type: SenderType,
+}
+
 /// Arguments received in startup while spawing [SenderAccount] actor
 pub struct SenderAccountsManagerArgs {
     /// Config forwarded to [SenderAccount]
@@ -312,6 +325,13 @@ pub struct SenderAccountsManagerArgs {
 
     /// Prefix used to bypass limitations of global actor registry (used for tests)
     pub prefix: Option<String>,
+
+    /// Optional channel receiver for receipt notifications from the service.
+    ///
+    /// When provided, the manager will listen for notifications from this channel
+    /// in addition to (or instead of) pg_notify. This enables direct notification
+    /// from the service in the unified binary.
+    pub receipt_notification_rx: Option<tokio::sync::mpsc::Receiver<ChannelReceiptNotification>>,
 }
 
 /// State for [SenderAccountsManager] actor
@@ -323,6 +343,8 @@ pub struct State {
     sender_ids_v2: HashSet<Address>,
     new_receipts_watcher_handle_v1: Option<tokio::task::JoinHandle<()>>,
     new_receipts_watcher_handle_v2: Option<tokio::task::JoinHandle<()>>,
+    /// Handle for the channel-based receipt notification watcher (unified binary mode)
+    channel_receipts_watcher_handle: Option<tokio::task::JoinHandle<()>>,
 
     config: &'static SenderAccountConfig,
     domain_separator: Eip712Domain,
@@ -364,6 +386,7 @@ impl Actor for SenderAccountsManager {
             network_subgraph,
             sender_aggregator_endpoints,
             prefix,
+            receipt_notification_rx,
         }: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
         // Do not pre-map allocations globally. We keep the raw watcher and
@@ -422,6 +445,7 @@ impl Actor for SenderAccountsManager {
             sender_ids_v2: HashSet::new(),
             new_receipts_watcher_handle_v1: None,
             new_receipts_watcher_handle_v2: None,
+            channel_receipts_watcher_handle: None,
             pgpool: pgpool.clone(),
             indexer_allocations,
             escrow_accounts_v1: escrow_accounts_v1.clone(),
@@ -500,12 +524,26 @@ impl Actor for SenderAccountsManager {
                 new_receipts_watcher()
                     .actor_cell(myself.get_cell())
                     .pglistener(listener_v2)
-                    .escrow_accounts_rx(escrow_accounts_v2)
+                    .escrow_accounts_rx(escrow_accounts_v2.clone())
                     .sender_type(SenderType::Horizon)
-                    .maybe_prefix(prefix)
+                    .maybe_prefix(prefix.clone())
                     .call(),
             ));
         };
+
+        // Start channel-based receipt watcher if a channel is provided (unified binary mode)
+        if let Some(rx) = receipt_notification_rx {
+            tracing::info!(
+                "Starting channel-based receipt notification watcher (unified binary mode)"
+            );
+            state.channel_receipts_watcher_handle = Some(tokio::spawn(channel_receipts_watcher(
+                myself.get_cell(),
+                rx,
+                state.escrow_accounts_v1.clone(),
+                state.escrow_accounts_v2.clone(),
+                state.prefix.clone(),
+            )));
+        }
 
         tracing::info!("SenderAccountManager created!");
         Ok(state)
@@ -516,13 +554,17 @@ impl Actor for SenderAccountsManager {
         _: ActorRef<Self::Msg>,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        // Abort the notification watcher on drop. Otherwise it may panic because the PgPool could
-        // get dropped before. (Observed in tests)
+        // Abort the notification watchers on drop. Otherwise they may panic because the PgPool
+        // could get dropped before. (Observed in tests)
         if let Some(handle) = &state.new_receipts_watcher_handle_v1 {
             handle.abort();
         }
 
         if let Some(handle) = &state.new_receipts_watcher_handle_v2 {
+            handle.abort();
+        }
+
+        if let Some(handle) = &state.channel_receipts_watcher_handle {
             handle.abort();
         }
 
@@ -1213,6 +1255,76 @@ async fn new_receipts_watcher(
     tracing::error!("Manager killed");
 }
 
+/// Continuously listens for receipt notifications from a tokio channel and forwards them to the
+/// corresponding SenderAccount.
+///
+/// This is used in the unified binary where the service sends notifications directly
+/// through a channel after storing receipts, avoiding the pg_notify round-trip.
+async fn channel_receipts_watcher(
+    actor_cell: ActorCell,
+    mut rx: tokio::sync::mpsc::Receiver<ChannelReceiptNotification>,
+    escrow_accounts_v1: Receiver<EscrowAccounts>,
+    escrow_accounts_v2: Receiver<EscrowAccounts>,
+    prefix: Option<String>,
+) {
+    tracing::info!(
+        "Channel receipts watcher started (unified binary mode), prefix: {:?}",
+        prefix
+    );
+
+    while let Some(notification) = rx.recv().await {
+        let ChannelReceiptNotification {
+            notification: receipt_notification,
+            sender_type,
+        } = notification;
+
+        tracing::debug!(
+            sender_type = ?sender_type,
+            receipt_id = receipt_notification.id(),
+            value = receipt_notification.value(),
+            "Received receipt notification from channel"
+        );
+
+        // Select the correct escrow accounts based on sender type
+        let escrow_accounts_rx = match sender_type {
+            SenderType::Legacy => escrow_accounts_v1.clone(),
+            SenderType::Horizon => escrow_accounts_v2.clone(),
+        };
+
+        match handle_notification(
+            receipt_notification,
+            escrow_accounts_rx,
+            sender_type,
+            prefix.as_deref(),
+        )
+        .await
+        {
+            Ok(()) => {
+                tracing::debug!(
+                    event = "channel_notification_handled",
+                    "Successfully handled channel notification"
+                );
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Error handling channel notification");
+            }
+        }
+    }
+
+    // Channel closed - this is expected during shutdown
+    tracing::info!("Channel receipts watcher shutting down - channel closed");
+
+    // Only kill the manager if this is unexpected (not during shutdown)
+    // In the unified binary, the service controls shutdown, so we just exit gracefully
+    if actor_cell.get_status() == ractor::ActorStatus::Running {
+        tracing::warn!("Channel closed unexpectedly while manager is still running");
+        actor_cell
+            .kill_and_wait(None)
+            .await
+            .expect("Failed to kill manager.");
+    }
+}
+
 /// Handles a new detected [NewReceiptNotification] and routes to proper
 /// reference of [super::sender_allocation::SenderAllocation]
 ///
@@ -1475,6 +1587,7 @@ mod tests {
                 sender_ids_v2: HashSet::new(),
                 new_receipts_watcher_handle_v1: None,
                 new_receipts_watcher_handle_v2: None,
+                channel_receipts_watcher_handle: None,
                 pgpool,
                 indexer_allocations: watch::channel(HashMap::new()).1,
                 escrow_accounts_v1: watch::channel(escrow_accounts.clone()).1,
