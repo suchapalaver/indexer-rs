@@ -91,6 +91,23 @@ pub async fn run() -> anyhow::Result<()> {
         .context("Failed to run database migrations")?;
     tracing::info!("Database migrations completed successfully");
 
+    // Start Management API if agent is enabled
+    if config.agent.enabled {
+        let management_addr = config.agent.management_api.get_socket_addr();
+        let management_pool = database.clone();
+
+        tokio::spawn(async move {
+            if let Err(e) = start_management_api(management_addr, management_pool).await {
+                tracing::error!(error = %e, "Management API server failed");
+            }
+        });
+
+        tracing::info!(
+            address = %management_addr,
+            "Management API GraphQL server started"
+        );
+    }
+
     let domain_separator = tap_eip712_domain(
         config.blockchain.chain_id as u64,
         config.blockchain.receipts_verifier_address,
@@ -355,6 +372,25 @@ async fn start_dips_server(addr: SocketAddr, service: impl IndexerDipsService) {
         .serve(addr)
         .await
         .expect("unable to start dips grpc");
+}
+
+async fn start_management_api(addr: SocketAddr, pool: sqlx::PgPool) -> anyhow::Result<()> {
+    use async_graphql_axum::GraphQL;
+    use axum::{routing::post_service, Router};
+
+    let schema = indexer_management_api::build_schema(pool).await;
+
+    let app = Router::new().route("/graphql", post_service(GraphQL::new(schema)));
+
+    let listener = TcpListener::bind(&addr)
+        .await
+        .context("Failed to bind Management API port")?;
+
+    axum::serve(listener, app)
+        .await
+        .context("Management API server error")?;
+
+    Ok(())
 }
 
 async fn create_subgraph_client(

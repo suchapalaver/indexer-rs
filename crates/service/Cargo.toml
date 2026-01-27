@@ -12,6 +12,7 @@ indexer-attestation = { path = "../attestation" }
 indexer-allocation = { path = "../allocation" }
 indexer-config = { path = "../config" }
 indexer-dips = { path = "../dips" }
+indexer-management-api = { path = "../indexer-management-api" }
 indexer-query = { path = "../query" }
 indexer-receipt = { path = "../indexer-receipt" }
 profiler = { path = "../profiler", optional = true }
