@@ -4388,6 +4388,7 @@ dependencies = [
 name = "indexer-agent"
 version = "0.1.0"
 dependencies = [
+ "alloy",
  "anyhow",
  "bigdecimal",
  "chrono",

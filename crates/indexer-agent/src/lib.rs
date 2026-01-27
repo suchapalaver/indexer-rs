@@ -8,12 +8,18 @@
 //! - Database operations for the agent tables
 //! - Rules evaluation engine for allocation decisions
 //! - Reconciliation loop for allocation management
+//! - Action executor for on-chain transaction execution
 //! - Business logic for allocation management
 
+pub mod executor;
 pub mod models;
 pub mod reconciliation;
 pub mod rules;
 
+pub use executor::{
+    is_nonce_error, ActionExecutor, ExecutorConfig, ExecutorError, HorizonStakingContract,
+    ProviderCache, SubgraphServiceContract,
+};
 pub use models::{
     Action, ActionFilter, ActionInput, ActionStatus, ActionType, IdentifierType,
     IndexingDecisionBasis, IndexingRule, IndexingRuleInput, POIDispute, POIDisputeInput,

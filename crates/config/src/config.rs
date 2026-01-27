@@ -908,6 +908,36 @@ pub struct AgentConfig {
     /// Management API configuration
     #[serde(default)]
     pub management_api: ManagementApiConfig,
+
+    /// Executor configuration
+    #[serde(default)]
+    pub executor: ExecutorAgentConfig,
+}
+
+/// Configuration for the action executor
+#[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(PartialEq))]
+pub struct ExecutorAgentConfig {
+    /// Enable action execution (sending transactions on-chain)
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Interval between execution cycles in seconds
+    #[serde(default = "default_executor_interval_secs")]
+    pub interval_secs: u64,
+}
+
+fn default_executor_interval_secs() -> u64 {
+    30
+}
+
+impl Default for ExecutorAgentConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_secs: default_executor_interval_secs(),
+        }
+    }
 }
 
 /// Configuration for the Management API GraphQL server

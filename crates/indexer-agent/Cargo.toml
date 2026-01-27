@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+alloy = { version = "1.0", features = [
+    "provider-http",
+    "network",
+    "sol-types",
+    "signers",
+    "signer-local",
+] }
 anyhow.workspace = true
 bigdecimal = { workspace = true, features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
