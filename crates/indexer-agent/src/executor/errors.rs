@@ -3,6 +3,7 @@
 
 //! Error types for the action executor.
 
+use alloy::primitives::Address;
 use thiserror::Error;
 
 /// Errors that can occur during action execution.
@@ -11,6 +12,10 @@ pub enum ExecutorError {
     /// Action not found in database
     #[error("action not found: {action_id}")]
     ActionNotFound { action_id: i32 },
+
+    /// Operator not authorized for indexer
+    #[error("operator {operator} is not authorized for indexer {indexer}")]
+    UnauthorizedOperator { indexer: Address, operator: Address },
 
     /// Action is not in approved state
     #[error("action {action_id} is not approved, status: {status}")]
@@ -118,5 +123,17 @@ mod tests {
         assert!(!is_nonce_error("insufficient funds"));
         assert!(!is_nonce_error("gas limit exceeded"));
         assert!(!is_nonce_error("contract reverted"));
+    }
+
+    #[test]
+    fn test_unauthorized_operator_error() {
+        let indexer = Address::repeat_byte(0x11);
+        let operator = Address::repeat_byte(0x22);
+        let error = ExecutorError::UnauthorizedOperator { indexer, operator };
+
+        let message = error.to_string();
+        assert!(message.contains("0x1111111111111111111111111111111111111111"));
+        assert!(message.contains("0x2222222222222222222222222222222222222222"));
+        assert!(message.contains("not authorized"));
     }
 }

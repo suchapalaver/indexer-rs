@@ -19,7 +19,7 @@ use tokio::{sync::watch, time::interval};
 use tracing::{debug, error, info, warn};
 
 use super::{
-    contracts::SubgraphService,
+    contracts::{HorizonStaking, SubgraphService},
     errors::{is_nonce_error, ExecutorError},
     provider::{ExecutorProvider, ProviderCache},
     transactions::{build_allocate_tx, build_unallocate_tx, parse_amount, GAS_BUFFER_PERCENT},
@@ -44,6 +44,9 @@ pub struct ExecutorConfig {
     /// Address of the SubgraphService contract
     pub subgraph_service_address: Address,
 
+    /// Address of the HorizonStaking contract (for authorization checks)
+    pub horizon_staking_address: Address,
+
     /// The indexer's address
     pub indexer_address: Address,
 
@@ -62,6 +65,7 @@ impl Default for ExecutorConfig {
         Self {
             execution_interval: Duration::from_secs(30),
             subgraph_service_address: Address::ZERO,
+            horizon_staking_address: Address::ZERO,
             indexer_address: Address::ZERO,
             protocol_network: String::new(),
             chain_id: 0,
@@ -147,6 +151,15 @@ impl ActionExecutor {
         }
 
         info!(count = actions.len(), "Executing approved actions");
+
+        // Get provider for authorization check
+        let provider = self
+            .provider_cache
+            .get_provider(self.config.chain_id, self.signer.clone())
+            .await?;
+
+        // Verify operator authorization before processing any actions
+        self.verify_operator_authorization(&provider).await?;
 
         // Sort actions by type for optimal execution order
         let mut unallocates = Vec::new();
@@ -570,6 +583,55 @@ impl ActionExecutor {
         // Convert signature to bytes
         Ok(Bytes::from(signature.as_bytes().to_vec()))
     }
+
+    /// Verify that the operator is authorized to act on behalf of the indexer.
+    ///
+    /// This checks the HorizonStaking contract to ensure the operator (signer) has
+    /// been granted authorization by the indexer (service provider) for the
+    /// SubgraphService (verifier).
+    ///
+    /// This check is performed once per execution cycle, not per-action, to minimize
+    /// RPC calls while still ensuring authorization before any transactions are submitted.
+    async fn verify_operator_authorization(
+        &self,
+        provider: &ExecutorProvider,
+    ) -> Result<(), ExecutorError> {
+        let staking = HorizonStaking::new(self.config.horizon_staking_address, provider);
+
+        let operator_address = self.signer.address();
+
+        // Check if the operator is authorized for the indexer on the SubgraphService
+        let is_authorized = staking
+            .isAuthorized(
+                self.config.indexer_address,
+                operator_address,
+                self.config.subgraph_service_address,
+            )
+            .call()
+            .await
+            .map_err(|e| ExecutorError::ContractCall(format!("isAuthorized check failed: {e}")))?;
+
+        if !is_authorized {
+            warn!(
+                indexer = %self.config.indexer_address,
+                operator = %operator_address,
+                verifier = %self.config.subgraph_service_address,
+                "Operator is not authorized for indexer"
+            );
+            return Err(ExecutorError::UnauthorizedOperator {
+                indexer: self.config.indexer_address,
+                operator: operator_address,
+            });
+        }
+
+        debug!(
+            indexer = %self.config.indexer_address,
+            operator = %operator_address,
+            "Operator authorization verified"
+        );
+
+        Ok(())
+    }
 }
 
 /// Parse a deployment ID from IPFS hash or bytes32 format.
@@ -595,6 +657,8 @@ mod tests {
         let config = ExecutorConfig::default();
         assert_eq!(config.execution_interval, Duration::from_secs(30));
         assert_eq!(config.subgraph_service_address, Address::ZERO);
+        assert_eq!(config.horizon_staking_address, Address::ZERO);
+        assert_eq!(config.indexer_address, Address::ZERO);
     }
 
     #[test]

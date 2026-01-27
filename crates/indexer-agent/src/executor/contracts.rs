@@ -128,6 +128,17 @@ sol! {
         /// * `poi` - Proof of Indexing
         function closeAllocation(address allocationId, bytes32 poi) external;
 
+        /// Check if an operator is authorized to act on behalf of a service provider.
+        ///
+        /// # Arguments
+        /// * `serviceProvider` - The service provider (indexer) address
+        /// * `operator` - The operator address to check
+        /// * `verifier` - The verifier (data service) contract address
+        ///
+        /// # Returns
+        /// * `bool` - True if the operator is authorized
+        function isAuthorized(address serviceProvider, address operator, address verifier) external view returns (bool);
+
         /// Provision data structure
         struct Provision {
             uint256 tokens;
