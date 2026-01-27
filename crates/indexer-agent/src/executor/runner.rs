@@ -10,10 +10,12 @@ use alloy::{
     primitives::{Address, Bytes, FixedBytes, U256},
     providers::Provider,
     rpc::types::TransactionRequest,
-    signers::local::PrivateKeySigner,
+    signers::{local::PrivateKeySigner, Signer},
 };
+use bip39::Mnemonic;
 use sqlx::PgPool;
-use tokio::time::interval;
+use thegraph_core::DeploymentId;
+use tokio::{sync::watch, time::interval};
 use tracing::{debug, error, info, warn};
 
 use super::{
@@ -50,6 +52,9 @@ pub struct ExecutorConfig {
 
     /// Chain ID for the network
     pub chain_id: u64,
+
+    /// Operator mnemonic for deriving allocation keys
+    pub operator_mnemonic: Option<Mnemonic>,
 }
 
 impl Default for ExecutorConfig {
@@ -60,6 +65,7 @@ impl Default for ExecutorConfig {
             indexer_address: Address::ZERO,
             protocol_network: String::new(),
             chain_id: 0,
+            operator_mnemonic: None,
         }
     }
 }
@@ -77,6 +83,12 @@ pub struct ActionExecutor {
 
     /// Executor configuration
     config: ExecutorConfig,
+
+    /// Watch receiver for current epoch number
+    epoch_rx: watch::Receiver<u64>,
+
+    /// Counter for allocation index (used in key derivation)
+    allocation_index: std::sync::atomic::AtomicU64,
 }
 
 impl ActionExecutor {
@@ -87,17 +99,21 @@ impl ActionExecutor {
     /// * `provider_cache` - Provider cache for blockchain connections
     /// * `signer` - Private key signer for transactions
     /// * `config` - Executor configuration
+    /// * `epoch_rx` - Watch receiver for current epoch number
     pub fn new(
         pool: PgPool,
         provider_cache: Arc<ProviderCache>,
         signer: PrivateKeySigner,
         config: ExecutorConfig,
+        epoch_rx: watch::Receiver<u64>,
     ) -> Self {
         Self {
             pool,
             provider_cache,
             signer,
             config,
+            epoch_rx,
+            allocation_index: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -277,9 +293,9 @@ impl ActionExecutor {
         let deployment_id = parse_deployment_id(&action.deployment_id)?;
 
         // Generate allocation ID and proof
-        // TODO: Implement proper allocation ID generation
-        let allocation_id = Address::ZERO; // Placeholder
-        let proof = Bytes::new(); // Placeholder
+        let (allocation_id, proof) = self
+            .generate_allocation_id_and_proof(&deployment_id)
+            .await?;
 
         // Build transaction
         let calldata = build_allocate_tx(
@@ -469,23 +485,105 @@ impl ActionExecutor {
             ))),
         }
     }
+
+    /// Generate an allocation ID and its corresponding proof.
+    ///
+    /// The allocation ID is the address of a wallet derived from the operator mnemonic,
+    /// the current epoch, the deployment ID, and an incrementing index.
+    ///
+    /// The proof is an EIP-712 signature over the allocation ID, signed by the derived
+    /// wallet. This proves that the indexer controls the allocation ID address.
+    async fn generate_allocation_id_and_proof(
+        &self,
+        deployment_id: &FixedBytes<32>,
+    ) -> Result<(Address, Bytes), ExecutorError> {
+        // Get the operator mnemonic
+        let mnemonic =
+            self.config
+                .operator_mnemonic
+                .as_ref()
+                .ok_or_else(|| ExecutorError::MissingField {
+                    action_id: 0,
+                    field: "operator_mnemonic".to_string(),
+                })?;
+
+        // Get current epoch
+        let current_epoch = *self.epoch_rx.borrow();
+
+        // Get next allocation index and increment atomically
+        let index = self
+            .allocation_index
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        // Convert deployment ID to DeploymentId type for key derivation
+        let deployment = DeploymentId::new(*deployment_id);
+
+        // Derive the allocation key pair using the attestation crate's derivation logic
+        let allocation_wallet = indexer_attestation::derive_key_pair(
+            mnemonic.to_string().as_str(),
+            current_epoch,
+            &deployment,
+            index,
+        )
+        .map_err(|e| {
+            ExecutorError::TransactionBuild(format!("failed to derive allocation key: {e}"))
+        })?;
+
+        let allocation_id = allocation_wallet.address();
+
+        // Sign the allocation ID to create the proof
+        // The proof demonstrates that the operator controls the allocation ID
+        let proof = self
+            .sign_allocation_proof(&allocation_wallet, allocation_id)
+            .await?;
+
+        info!(
+            allocation_id = %allocation_id,
+            epoch = current_epoch,
+            index = index,
+            deployment = %deployment,
+            "Generated allocation ID and proof"
+        );
+
+        Ok((allocation_id, proof))
+    }
+
+    /// Sign an allocation proof using the allocation wallet.
+    ///
+    /// This creates a signature that proves the indexer controls the allocation ID address.
+    /// The signature is over a message containing the allocation ID.
+    async fn sign_allocation_proof(
+        &self,
+        allocation_wallet: &PrivateKeySigner,
+        allocation_id: Address,
+    ) -> Result<Bytes, ExecutorError> {
+        // Create the message to sign: the allocation ID as bytes
+        // This follows the Graph Protocol pattern where the proof is a signature
+        // from the allocation wallet over its own address
+        let message = allocation_id.as_slice();
+
+        // Sign the message using EIP-191 personal_sign
+        let signature = allocation_wallet.sign_message(message).await.map_err(|e| {
+            ExecutorError::TransactionBuild(format!("failed to sign allocation proof: {e}"))
+        })?;
+
+        // Convert signature to bytes
+        Ok(Bytes::from(signature.as_bytes().to_vec()))
+    }
 }
 
 /// Parse a deployment ID from IPFS hash or bytes32 format.
+///
+/// Supports both IPFS CIDv0 hashes (starting with "Qm") and hex-encoded bytes32.
 fn parse_deployment_id(deployment_id: &str) -> Result<FixedBytes<32>, ExecutorError> {
-    // If it starts with "Qm", it's an IPFS hash that needs conversion
-    if deployment_id.starts_with("Qm") {
-        // TODO: Implement proper IPFS hash to bytes32 conversion
-        // For now, return an error indicating this needs implementation
-        return Err(ExecutorError::TransactionBuild(
-            "IPFS hash conversion not yet implemented".to_string(),
-        ));
-    }
-
-    // Try parsing as hex bytes32
-    deployment_id
+    // Use thegraph_core::DeploymentId which handles both IPFS and hex formats
+    let parsed: DeploymentId = deployment_id
         .parse()
-        .map_err(|e| ExecutorError::TransactionBuild(format!("invalid deployment ID: {e}")))
+        .map_err(|e| ExecutorError::TransactionBuild(format!("invalid deployment ID: {e}")))?;
+
+    // Convert to bytes32 using the explicit AsRef<[u8; 32]> implementation
+    let bytes: &[u8; 32] = parsed.as_ref();
+    Ok(FixedBytes::from(*bytes))
 }
 
 #[cfg(test)]
@@ -501,13 +599,37 @@ mod tests {
 
     #[test]
     fn test_parse_deployment_id_hex() {
-        // Should fail for IPFS hashes (not implemented)
-        let result = parse_deployment_id("QmTest");
-        assert!(result.is_err());
-
         // Should work for bytes32 hex
         let hex = "0x0000000000000000000000000000000000000000000000000000000000000000";
         let result = parse_deployment_id(hex);
         assert!(result.is_ok());
+        assert_eq!(result.unwrap(), FixedBytes::ZERO);
+    }
+
+    #[test]
+    fn test_parse_deployment_id_ipfs() {
+        // Should work for valid IPFS CIDv0 hashes
+        let ipfs_hash = "QmSWxvd8SaQK6qZKJ7xtfxCCGoRzGnoi2WNzmJYYJW9BXY";
+        let result = parse_deployment_id(ipfs_hash);
+        assert!(result.is_ok());
+
+        // The bytes32 representation should be non-zero
+        let bytes = result.unwrap();
+        assert_ne!(bytes, FixedBytes::ZERO);
+
+        // Verify round-trip: same IPFS hash should produce same bytes32
+        let result2 = parse_deployment_id(ipfs_hash);
+        assert_eq!(bytes, result2.unwrap());
+    }
+
+    #[test]
+    fn test_parse_deployment_id_invalid() {
+        // Should fail for invalid strings
+        let result = parse_deployment_id("not-a-valid-id");
+        assert!(result.is_err());
+
+        // Should fail for too short hex
+        let result = parse_deployment_id("0x1234");
+        assert!(result.is_err());
     }
 }
