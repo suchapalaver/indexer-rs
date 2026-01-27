@@ -7,14 +7,21 @@
 //! - Data models for indexing rules, actions, and POI disputes
 //! - Database operations for the agent tables
 //! - Rules evaluation engine for allocation decisions
+//! - Reconciliation loop for allocation management
 //! - Business logic for allocation management
 
 pub mod models;
+pub mod reconciliation;
 pub mod rules;
 
 pub use models::{
     Action, ActionFilter, ActionInput, ActionStatus, ActionType, IdentifierType,
     IndexingDecisionBasis, IndexingRule, IndexingRuleInput, POIDispute, POIDisputeInput,
+};
+pub use reconciliation::{
+    queue_allocation_action, queue_unallocation_action, reconcile_deployment_allocations,
+    reconcile_once, run_reconciliation_loop, ActiveAllocation, AllocationAction,
+    DeploymentReconciliation, NetworkDeploymentData, ReconciliationConfig, ReconciliationContext,
 };
 pub use rules::{
     evaluate_deployments, is_deployment_worth_allocating, ActivationCriteria, AllocationDecision,
