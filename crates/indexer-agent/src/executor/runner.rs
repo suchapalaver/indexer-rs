@@ -35,6 +35,12 @@ const RECEIPT_INITIAL_BACKOFF_MS: u64 = 1000;
 /// Timeout for waiting for transaction receipt (in seconds).
 const RECEIPT_TIMEOUT_SECS: u64 = 60;
 
+/// Default timeout for waiting on gas price (5 minutes).
+const DEFAULT_GAS_PRICE_WAIT_TIMEOUT_SECS: u64 = 300;
+
+/// Poll interval when waiting for gas price to drop.
+const GAS_PRICE_POLL_INTERVAL: Duration = Duration::from_secs(15);
+
 /// Configuration for the action executor.
 #[derive(Debug, Clone)]
 pub struct ExecutorConfig {
@@ -61,6 +67,13 @@ pub struct ExecutorConfig {
 
     /// Operator mnemonic for deriving allocation keys
     pub operator_mnemonic: Option<Mnemonic>,
+
+    /// Maximum gas price (in gwei) to accept before waiting.
+    /// If None, no gas price limit is enforced.
+    pub max_gas_price_gwei: Option<u64>,
+
+    /// Maximum time (seconds) to wait for acceptable gas price.
+    pub gas_price_wait_timeout_secs: u64,
 }
 
 impl Default for ExecutorConfig {
@@ -74,6 +87,8 @@ impl Default for ExecutorConfig {
             protocol_network: String::new(),
             chain_id: 0,
             operator_mnemonic: None,
+            max_gas_price_gwei: None,
+            gas_price_wait_timeout_secs: DEFAULT_GAS_PRICE_WAIT_TIMEOUT_SECS,
         }
     }
 }
@@ -411,6 +426,9 @@ impl ActionExecutor {
         // Check if network is paused before submitting
         self.check_network_paused(provider).await?;
 
+        // Wait for acceptable gas price if threshold is configured
+        self.wait_for_acceptable_gas_price(provider).await?;
+
         let signer_address = self.signer.address();
 
         // Build transaction request
@@ -448,6 +466,74 @@ impl ActionExecutor {
         info!(tx_hash = %tx_hash, gas_limit = gas_limit, "Transaction submitted");
 
         Ok(tx_hash)
+    }
+
+    /// Wait for gas price to drop below the configured threshold.
+    ///
+    /// If no gas price threshold is configured (`max_gas_price_gwei = None`),
+    /// this method returns immediately without any checks.
+    ///
+    /// If a threshold is configured, this method polls the gas price every 15 seconds
+    /// until either:
+    /// - The gas price drops below the threshold, or
+    /// - The timeout expires (default 5 minutes)
+    ///
+    /// This implements Invariant 25.2: Gas Price Threshold from the TypeScript agent.
+    async fn wait_for_acceptable_gas_price(
+        &self,
+        provider: &ExecutorProvider,
+    ) -> Result<(), ExecutorError> {
+        let Some(max_gwei) = self.config.max_gas_price_gwei else {
+            // No threshold configured, proceed immediately
+            return Ok(());
+        };
+
+        let timeout_secs = self.config.gas_price_wait_timeout_secs;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+
+        // Convert threshold to wei (1 gwei = 10^9 wei)
+        let max_wei: u128 = (max_gwei as u128) * 1_000_000_000;
+
+        loop {
+            let current_gas_price = provider
+                .get_gas_price()
+                .await
+                .map_err(|e| ExecutorError::Provider(format!("failed to get gas price: {e}")))?;
+
+            let current_wei: u128 = current_gas_price;
+            let current_gwei = current_wei / 1_000_000_000;
+
+            if current_wei <= max_wei {
+                debug!(
+                    current_gwei = current_gwei,
+                    max_gwei = max_gwei,
+                    "Gas price acceptable"
+                );
+                return Ok(());
+            }
+
+            if tokio::time::Instant::now() >= deadline {
+                warn!(
+                    current_gwei = current_gwei,
+                    max_gwei = max_gwei,
+                    waited_secs = timeout_secs,
+                    "Gas price threshold timeout"
+                );
+                return Err(ExecutorError::GasPriceThresholdTimeout {
+                    current_gwei,
+                    max_gwei,
+                    waited_secs: timeout_secs,
+                });
+            }
+
+            info!(
+                current_gwei = current_gwei,
+                max_gwei = max_gwei,
+                "Gas price above threshold, waiting"
+            );
+
+            tokio::time::sleep(GAS_PRICE_POLL_INTERVAL).await;
+        }
     }
 
     /// Get transaction receipt with retry logic.
@@ -788,6 +874,8 @@ mod tests {
         assert_eq!(config.horizon_staking_address, Address::ZERO);
         assert_eq!(config.controller_address, Address::ZERO);
         assert_eq!(config.indexer_address, Address::ZERO);
+        assert!(config.max_gas_price_gwei.is_none());
+        assert_eq!(config.gas_price_wait_timeout_secs, 300);
     }
 
     #[test]

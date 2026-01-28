@@ -343,6 +343,51 @@ impl Action {
 
         Ok(result.rows_affected())
     }
+
+    /// Check if an action was recently executed (succeeded or failed) for this deployment.
+    ///
+    /// Returns `true` if an action for the given deployment completed within the cooldown
+    /// period, preventing rapid re-queueing of actions for the same deployment.
+    ///
+    /// This implements Invariant 8.2/22.2: Recently Executed Check from the TypeScript
+    /// agent, which uses a 15-minute default cooldown window.
+    ///
+    /// # Arguments
+    /// * `pool` - Database connection pool
+    /// * `deployment_id` - The deployment to check
+    /// * `protocol_network` - The protocol network identifier
+    /// * `cooldown_seconds` - The cooldown period in seconds
+    ///
+    /// # Returns
+    /// `true` if a recent action exists (cooldown not expired), `false` otherwise
+    pub async fn was_recently_executed(
+        pool: &PgPool,
+        deployment_id: &str,
+        protocol_network: &str,
+        cooldown_seconds: u64,
+    ) -> Result<bool, sqlx::Error> {
+        // Calculate the cutoff timestamp
+        let cutoff_interval = format!("{cooldown_seconds} seconds");
+
+        let result: (bool,) = sqlx::query_as(
+            r#"
+            SELECT EXISTS(
+                SELECT 1 FROM "Actions"
+                WHERE deployment_id = $1
+                  AND protocol_network = $2
+                  AND status IN ('success', 'failed')
+                  AND updated_at > NOW() - $3::interval
+            )
+            "#,
+        )
+        .bind(deployment_id)
+        .bind(protocol_network)
+        .bind(&cutoff_interval)
+        .fetch_one(pool)
+        .await?;
+
+        Ok(result.0)
+    }
 }
 
 #[cfg(test)]

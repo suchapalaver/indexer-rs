@@ -90,6 +90,7 @@ pub async fn reconcile_deployment_allocations(
                     "No indexing rule found for deployment",
                     alloc.is_legacy,
                     ctx.auto_approve,
+                    ctx.action_cooldown_secs,
                 )
                 .await?
                 {
@@ -144,6 +145,7 @@ async fn reconcile_single_deployment(
                 &ctx.protocol_network,
                 decision,
                 ctx.auto_approve,
+                ctx.action_cooldown_secs,
             )
             .await?
             {
@@ -169,6 +171,7 @@ async fn reconcile_single_deployment(
                                 &amount,
                                 alloc.is_legacy,
                                 ctx.auto_approve,
+                                ctx.action_cooldown_secs,
                             )
                             .await?
                             {
@@ -196,6 +199,7 @@ async fn reconcile_single_deployment(
                 &decision.reason,
                 alloc.is_legacy,
                 ctx.auto_approve,
+                ctx.action_cooldown_secs,
             )
             .await?
             {

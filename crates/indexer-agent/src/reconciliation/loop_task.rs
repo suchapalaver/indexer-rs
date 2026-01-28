@@ -22,6 +22,9 @@ use crate::{
     rules::{evaluate_deployments, NetworkDeployment},
 };
 
+/// Default cooldown period in seconds (15 minutes, matching TypeScript agent).
+pub const DEFAULT_ACTION_COOLDOWN_SECS: u64 = 900;
+
 /// Configuration for the reconciliation loop.
 #[derive(Debug, Clone)]
 pub struct ReconciliationConfig {
@@ -33,6 +36,14 @@ pub struct ReconciliationConfig {
     pub max_allocation_epochs: u64,
     /// Whether to auto-approve actions (AUTO mode)
     pub auto_approve: bool,
+    /// Cooldown period in seconds before re-queueing actions for the same deployment.
+    ///
+    /// After an action completes (success or failure), new actions for the same
+    /// deployment will be blocked until this cooldown period expires. This prevents
+    /// rapid action cycling that wastes gas.
+    ///
+    /// Default: 900 seconds (15 minutes), matching the TypeScript agent.
+    pub action_cooldown_secs: u64,
 }
 
 impl Default for ReconciliationConfig {
@@ -42,6 +53,7 @@ impl Default for ReconciliationConfig {
             protocol_network: "eip155:1".to_string(),
             max_allocation_epochs: 28,
             auto_approve: false,
+            action_cooldown_secs: DEFAULT_ACTION_COOLDOWN_SECS,
         }
     }
 }
@@ -149,6 +161,7 @@ async fn run_reconciliation_cycle(
         current_epoch,
         config.max_allocation_epochs,
         config.auto_approve,
+        config.action_cooldown_secs,
     );
 
     // Load and preprocess rules
@@ -200,6 +213,35 @@ pub async fn reconcile_once(
     deployments: Vec<NetworkDeploymentData>,
     allocations: Vec<ActiveAllocation>,
 ) -> Result<Vec<Action>, anyhow::Error> {
+    reconcile_once_with_cooldown(
+        pool,
+        indexer_address,
+        protocol_network,
+        current_epoch,
+        max_allocation_epochs,
+        auto_approve,
+        DEFAULT_ACTION_COOLDOWN_SECS,
+        deployments,
+        allocations,
+    )
+    .await
+}
+
+/// Simplified reconciliation loop that uses static data (for testing).
+///
+/// This version includes explicit cooldown configuration.
+#[allow(clippy::too_many_arguments)]
+pub async fn reconcile_once_with_cooldown(
+    pool: &PgPool,
+    indexer_address: Address,
+    protocol_network: &str,
+    current_epoch: u64,
+    max_allocation_epochs: u64,
+    auto_approve: bool,
+    action_cooldown_secs: u64,
+    deployments: Vec<NetworkDeploymentData>,
+    allocations: Vec<ActiveAllocation>,
+) -> Result<Vec<Action>, anyhow::Error> {
     // Check for approved actions awaiting execution
     let approved_actions = Action::get_approved(pool, protocol_network).await?;
     if !approved_actions.is_empty() {
@@ -218,6 +260,7 @@ pub async fn reconcile_once(
         current_epoch,
         max_allocation_epochs,
         auto_approve,
+        action_cooldown_secs,
     );
 
     // Load rules
@@ -247,5 +290,12 @@ mod tests {
         assert_eq!(config.interval, Duration::from_secs(120));
         assert_eq!(config.max_allocation_epochs, 28);
         assert!(!config.auto_approve);
+        assert_eq!(config.action_cooldown_secs, DEFAULT_ACTION_COOLDOWN_SECS);
+    }
+
+    #[test]
+    fn test_default_action_cooldown_is_fifteen_minutes() {
+        // Verify the default matches TypeScript agent's 15-minute cooldown
+        assert_eq!(DEFAULT_ACTION_COOLDOWN_SECS, 900);
     }
 }

@@ -736,8 +736,15 @@ pub struct HorizonConfig {
     pub enabled: bool,
 }
 
+/// Default action cooldown period in seconds (15 minutes, matching TypeScript agent).
+pub const DEFAULT_ACTION_COOLDOWN_SECS: u64 = 900;
+
+fn default_action_cooldown_secs() -> u64 {
+    DEFAULT_ACTION_COOLDOWN_SECS
+}
+
 /// Configuration for the indexer agent functionality
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[cfg_attr(test, derive(PartialEq))]
 pub struct AgentConfig {
     /// Enable agent functionality (management API, reconciliation, etc.)
@@ -759,6 +766,28 @@ pub struct AgentConfig {
     /// This requires the standalone tap-agent process to NOT be running.
     #[serde(default)]
     pub tap_agent_enabled: bool,
+
+    /// Cooldown period (seconds) before re-queueing actions for the same deployment.
+    ///
+    /// After an action completes (success or failure), new actions for the same
+    /// deployment will be blocked until this cooldown period expires. This prevents
+    /// rapid action cycling that wastes gas.
+    ///
+    /// Default: 900 seconds (15 minutes), matching the TypeScript agent.
+    #[serde(default = "default_action_cooldown_secs")]
+    pub action_cooldown_secs: u64,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            management_api: ManagementApiConfig::default(),
+            executor: ExecutorAgentConfig::default(),
+            tap_agent_enabled: false,
+            action_cooldown_secs: DEFAULT_ACTION_COOLDOWN_SECS,
+        }
+    }
 }
 
 /// Configuration for the action executor
@@ -772,10 +801,33 @@ pub struct ExecutorAgentConfig {
     /// Interval between execution cycles in seconds
     #[serde(default = "default_executor_interval_secs")]
     pub interval_secs: u64,
+
+    /// Maximum gas price (in gwei) to accept before waiting.
+    ///
+    /// If set, the executor will wait for the gas price to drop below this
+    /// threshold before submitting transactions. This prevents overpaying
+    /// during network congestion.
+    ///
+    /// Default: None (no gas price limit)
+    #[serde(default)]
+    pub max_gas_price_gwei: Option<u64>,
+
+    /// Maximum time (seconds) to wait for acceptable gas price.
+    ///
+    /// If the gas price doesn't drop below `max_gas_price_gwei` within this
+    /// timeout, the transaction attempt will fail with an error.
+    ///
+    /// Default: 300 (5 minutes)
+    #[serde(default = "default_gas_price_wait_timeout_secs")]
+    pub gas_price_wait_timeout_secs: u64,
 }
 
 fn default_executor_interval_secs() -> u64 {
     30
+}
+
+fn default_gas_price_wait_timeout_secs() -> u64 {
+    300
 }
 
 impl Default for ExecutorAgentConfig {
@@ -783,6 +835,8 @@ impl Default for ExecutorAgentConfig {
         Self {
             enabled: false,
             interval_secs: default_executor_interval_secs(),
+            max_gas_price_gwei: None,
+            gas_price_wait_timeout_secs: default_gas_price_wait_timeout_secs(),
         }
     }
 }

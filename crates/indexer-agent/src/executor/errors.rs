@@ -115,6 +115,14 @@ pub enum ExecutorError {
         expected_deployment: String,
         actual_deployment: String,
     },
+
+    /// Gas price exceeds threshold and didn't drop within timeout
+    #[error("gas price {current_gwei} gwei exceeds threshold {max_gwei} gwei after waiting {waited_secs}s")]
+    GasPriceThresholdTimeout {
+        current_gwei: u128,
+        max_gwei: u64,
+        waited_secs: u64,
+    },
 }
 
 /// Patterns that indicate a nonce-related error.
@@ -226,5 +234,20 @@ mod tests {
         assert!(message.contains("0x8888888888888888888888888888888888888888"));
         assert!(message.contains("0xabc123"));
         assert!(message.contains("0xdef456"));
+    }
+
+    #[test]
+    fn test_gas_price_threshold_timeout_error() {
+        let error = ExecutorError::GasPriceThresholdTimeout {
+            current_gwei: 150,
+            max_gwei: 100,
+            waited_secs: 300,
+        };
+        let message = error.to_string();
+        assert!(message.contains("150"));
+        assert!(message.contains("100"));
+        assert!(message.contains("300"));
+        assert!(message.contains("gwei"));
+        assert!(message.contains("exceeds threshold"));
     }
 }

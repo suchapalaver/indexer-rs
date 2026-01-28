@@ -32,11 +32,15 @@ pub struct AllocationAction {
 ///
 /// Creates a new allocation for a deployment that should be indexed
 /// according to the rules evaluation.
+///
+/// This function enforces the action cooldown (Invariant 8.2/22.2) by checking
+/// if an action was recently executed for this deployment before queueing a new one.
 pub async fn queue_allocation_action(
     pool: &PgPool,
     protocol_network: &str,
     decision: &AllocationDecision,
     auto_approve: bool,
+    cooldown_secs: u64,
 ) -> Result<Option<Action>, sqlx::Error> {
     let Some(ref rule) = decision.rule else {
         debug!(
@@ -59,6 +63,24 @@ pub async fn queue_allocation_action(
         debug!(
             deployment = %decision.deployment_id,
             "Action already pending for deployment, skipping"
+        );
+        return Ok(None);
+    }
+
+    // Check if an action was recently executed (cooldown check - Invariant 8.2/22.2)
+    if cooldown_secs > 0
+        && Action::was_recently_executed(
+            pool,
+            &decision.deployment_id,
+            protocol_network,
+            cooldown_secs,
+        )
+        .await?
+    {
+        debug!(
+            deployment = %decision.deployment_id,
+            cooldown_secs = cooldown_secs,
+            "Action recently executed for deployment, cooldown not expired"
         );
         return Ok(None);
     }
@@ -118,6 +140,10 @@ pub async fn queue_allocation_action(
 }
 
 /// Queue an unallocation action for an allocation that should be closed.
+///
+/// This function enforces the action cooldown (Invariant 8.2/22.2) by checking
+/// if an action was recently executed for this deployment before queueing a new one.
+#[allow(clippy::too_many_arguments)]
 pub async fn queue_unallocation_action(
     pool: &PgPool,
     protocol_network: &str,
@@ -126,12 +152,27 @@ pub async fn queue_unallocation_action(
     reason: &str,
     is_legacy: bool,
     auto_approve: bool,
+    cooldown_secs: u64,
 ) -> Result<Option<Action>, sqlx::Error> {
     // Check if there's already a pending action for this allocation
     if has_pending_action_for_allocation(pool, protocol_network, allocation_id).await? {
         debug!(
             allocation = %allocation_id,
             "Action already pending for allocation, skipping"
+        );
+        return Ok(None);
+    }
+
+    // Check if an action was recently executed (cooldown check - Invariant 8.2/22.2)
+    if cooldown_secs > 0
+        && Action::was_recently_executed(pool, deployment_id, protocol_network, cooldown_secs)
+            .await?
+    {
+        debug!(
+            deployment = %deployment_id,
+            allocation = %allocation_id,
+            cooldown_secs = cooldown_secs,
+            "Action recently executed for deployment, cooldown not expired"
         );
         return Ok(None);
     }
@@ -190,6 +231,10 @@ pub async fn queue_unallocation_action(
 }
 
 /// Queue a reallocation action for an expiring allocation.
+///
+/// This function enforces the action cooldown (Invariant 8.2/22.2) by checking
+/// if an action was recently executed for this deployment before queueing a new one.
+#[allow(clippy::too_many_arguments)]
 pub async fn queue_reallocation_action(
     pool: &PgPool,
     protocol_network: &str,
@@ -198,12 +243,27 @@ pub async fn queue_reallocation_action(
     amount: &str,
     is_legacy: bool,
     auto_approve: bool,
+    cooldown_secs: u64,
 ) -> Result<Option<Action>, sqlx::Error> {
     // Check if there's already a pending action for this allocation
     if has_pending_action_for_allocation(pool, protocol_network, allocation_id).await? {
         debug!(
             allocation = %allocation_id,
             "Action already pending for allocation, skipping"
+        );
+        return Ok(None);
+    }
+
+    // Check if an action was recently executed (cooldown check - Invariant 8.2/22.2)
+    if cooldown_secs > 0
+        && Action::was_recently_executed(pool, deployment_id, protocol_network, cooldown_secs)
+            .await?
+    {
+        debug!(
+            deployment = %deployment_id,
+            allocation = %allocation_id,
+            cooldown_secs = cooldown_secs,
+            "Action recently executed for deployment, cooldown not expired"
         );
         return Ok(None);
     }

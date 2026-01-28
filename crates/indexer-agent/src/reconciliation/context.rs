@@ -27,10 +27,13 @@ pub struct ReconciliationContext {
     pub max_allocation_epochs: u64,
     /// Whether to auto-approve actions (AUTO mode) or queue them (OVERSIGHT mode)
     pub auto_approve: bool,
+    /// Cooldown period in seconds before re-queueing actions for the same deployment
+    pub action_cooldown_secs: u64,
 }
 
 impl ReconciliationContext {
     /// Create a new reconciliation context.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         pool: PgPool,
         indexer_address: Address,
@@ -38,6 +41,7 @@ impl ReconciliationContext {
         current_epoch: u64,
         max_allocation_epochs: u64,
         auto_approve: bool,
+        action_cooldown_secs: u64,
     ) -> Self {
         Self {
             pool,
@@ -46,6 +50,7 @@ impl ReconciliationContext {
             current_epoch,
             max_allocation_epochs,
             auto_approve,
+            action_cooldown_secs,
         }
     }
 
