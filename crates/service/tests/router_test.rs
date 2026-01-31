@@ -5,16 +5,17 @@ use std::{net::SocketAddr, time::Duration};
 
 use axum::{body::to_bytes, extract::ConnectInfo, http::Request, Extension};
 use axum_extra::headers::Header;
+use base64::prelude::*;
 use indexer_config::{BlockchainConfig, GraphNodeConfig, IndexerConfig, NonZeroGRT};
 use indexer_monitor::EscrowAccounts;
 use indexer_service_rs::{
     service::{ServiceRouter, TapHeader},
     QueryBody,
 };
+use prost::Message;
 use reqwest::{Method, StatusCode, Url};
-use test_assets::{
-    create_signed_receipt, SignedReceiptRequest, INDEXER_ALLOCATIONS, TAP_EIP712_DOMAIN,
-};
+use tap_aggregator::grpc::v2::SignedReceipt;
+use test_assets::{create_signed_receipt_v2, INDEXER_ALLOCATIONS, TAP_EIP712_DOMAIN};
 use thegraph_core::alloy::primitives::Address;
 use tokio::sync::watch;
 use tower::Service;
@@ -119,13 +120,11 @@ async fn full_integration_test() {
     let res = String::from_utf8(bytes.into()).unwrap();
     insta::assert_snapshot!(res);
 
-    let receipt = create_signed_receipt(
-        SignedReceiptRequest::builder()
-            .allocation_id(allocation.id)
-            .value(100)
-            .build(),
-    )
-    .await;
+    let receipt = create_signed_receipt_v2().value(100).call().await;
+    // Encode receipt as base64-encoded protobuf (the expected header format)
+    let protobuf_receipt = SignedReceipt::from(receipt);
+    let encoded = protobuf_receipt.encode_to_vec();
+    let receipt_header = BASE64_STANDARD.encode(encoded);
 
     let query = QueryBody {
         query: "query".into(),
@@ -135,7 +134,7 @@ async fn full_integration_test() {
     let request = Request::builder()
         .method(Method::POST)
         .uri(format!("/subgraphs/id/{deployment}"))
-        .header(TapHeader::name(), serde_json::to_string(&receipt).unwrap())
+        .header(TapHeader::name(), receipt_header)
         .body(serde_json::to_string(&query).unwrap())
         .unwrap();
 

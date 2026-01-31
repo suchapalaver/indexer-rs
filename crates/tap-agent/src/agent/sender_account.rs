@@ -2667,9 +2667,9 @@ pub mod tests {
         let pgpool = test_db.pool;
         sqlx::query!(
             r#"
-                INSERT INTO scalar_tap_denylist (sender_address)
-                VALUES ($1)
-            "#,
+                    INSERT INTO tap_horizon_denylist (sender_address)
+                    VALUES ($1) ON CONFLICT DO NOTHING
+                "#,
             SENDER.1.encode_hex(),
         )
         .execute(&pgpool)

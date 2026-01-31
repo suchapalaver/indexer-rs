@@ -232,7 +232,7 @@ mod tests {
         }
 
         let manager = Arc::new(Manager::new(
-            TAP_EIP712_DOMAIN.clone(),
+            TAP_EIP712_DOMAIN_V2.clone(),
             context,
             CheckList::new(vec![Arc::new(MyCheck)]),
         ));
@@ -263,13 +263,18 @@ mod tests {
         let res = service.call(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        // verify receipts
+        // verify receipts stored in horizon table
         assert_while_retry!({
-            sqlx::query!("SELECT * FROM scalar_tap_receipts")
-                .fetch_all(&test_db.pool)
-                .await
-                .unwrap()
-                .is_empty()
+            let result = sqlx::query!(
+                "
+                SELECT count(*)
+                FROM tap_horizon_receipts
+            "
+            )
+            .fetch_one(&test_db.pool)
+            .await
+            .unwrap();
+            result.count.unwrap_or(0) == 0
         })
     }
 

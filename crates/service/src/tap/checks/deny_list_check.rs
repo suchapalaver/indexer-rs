@@ -215,12 +215,12 @@ mod tests {
     async fn test_sender_denylist() {
         let test_db = test_assets::setup_shared_test_db().await;
         let pgpool = test_db.pool;
-        // Add the sender to the denylist
+        // Add the sender to the horizon denylist
         sqlx::query!(
             r#"
-                INSERT INTO scalar_tap_denylist (sender_address)
-                VALUES ($1)
-            "#,
+                    INSERT INTO tap_horizon_denylist (sender_address)
+                    VALUES ($1) ON CONFLICT DO NOTHING
+                "#,
             TAP_SENDER.1.encode_hex()
         )
         .execute(&pgpool)
@@ -264,9 +264,9 @@ mod tests {
         // Add the sender to the denylist
         sqlx::query!(
             r#"
-                INSERT INTO scalar_tap_denylist (sender_address)
-                VALUES ($1)
-            "#,
+                    INSERT INTO tap_horizon_denylist (sender_address)
+                    VALUES ($1) ON CONFLICT DO NOTHING
+                "#,
             TAP_SENDER.1.encode_hex()
         )
         .execute(&pgpool)
@@ -284,9 +284,9 @@ mod tests {
         // Remove the sender from the denylist
         sqlx::query!(
             r#"
-                DELETE FROM scalar_tap_denylist
-                WHERE sender_address = $1
-            "#,
+                    DELETE FROM tap_horizon_denylist
+                    WHERE sender_address = $1
+                "#,
             TAP_SENDER.1.encode_hex()
         )
         .execute(&pgpool)

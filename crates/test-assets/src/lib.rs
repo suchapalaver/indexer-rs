@@ -434,7 +434,7 @@ pub async fn create_signed_receipt_v2(
     let (wallet, _) = &*self::TAP_SIGNER;
 
     Eip712SignedMessage::new(
-        &self::TAP_EIP712_DOMAIN,
+        &self::TAP_EIP712_DOMAIN_V2,
         tap_graph::v2::Receipt {
             payer: TAP_SENDER.1,
             service_provider: INDEXER_ADDRESS,

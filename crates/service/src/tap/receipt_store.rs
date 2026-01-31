@@ -275,16 +275,10 @@ impl DbReceiptV2 {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use futures::future::BoxFuture;
-    use sqlx::migrate::{MigrationSource, Migrator};
     use test_assets::{create_signed_receipt_v2, TAP_EIP712_DOMAIN_V2};
 
     use crate::tap::{
-        receipt_store::{
-            DatabaseReceipt, DbReceiptV2, InnerContext, ProcessReceiptError, ProcessedReceipt,
-        },
+        receipt_store::{DatabaseReceipt, DbReceiptV2, InnerContext, ProcessedReceipt},
         AdapterError,
     };
 
@@ -333,105 +327,6 @@ mod tests {
             let res = context.process_db_receipts(receipts).await.unwrap();
 
             assert_eq!(res, expected);
-        }
-    }
-
-    mod when_horizon_migrations_are_ignored {
-        use super::*;
-
-        #[tokio::test]
-        async fn test_empty_receipts_are_processed_successfully() {
-            let migrator = create_migrator();
-            let test_db = test_assets::setup_test_db_with_migrator(migrator).await;
-            let context = InnerContext {
-                pgpool: test_db.pool,
-                tap_agent_tx: None,
-            };
-
-            let res = context.process_db_receipts(vec![]).await.unwrap();
-
-            assert_eq!(res, ProcessedReceipt::None);
-        }
-
-        #[tokio::test]
-        async fn test_v2_receipts_fails_to_process_without_horizon_table() {
-            // Create a database without horizon migrations by running a custom migrator
-            // that excludes horizon-related migrations
-            let migrator = create_migrator();
-            let test_db = test_assets::setup_test_db_with_migrator(migrator).await;
-
-            let context = InnerContext {
-                pgpool: test_db.pool,
-                tap_agent_tx: None,
-            };
-
-            let receipts = vec![create_v2().await];
-            let (receipts, _rxs) = attach_oneshot_channels(receipts);
-            let error = context.process_db_receipts(receipts).await.unwrap_err();
-
-            let ProcessReceiptError::V2(error) = error;
-            let d = error.downcast_ref::<AdapterError>().unwrap().to_string();
-
-            assert_eq!(
-                d,
-                "error returned from database: relation \"tap_horizon_receipts\" does not exist"
-            );
-        }
-
-        pub fn create_migrator() -> Migrator {
-            futures::executor::block_on(Migrator::new(MigrationRunner::new(
-                "../../migrations",
-                ["horizon"],
-            )))
-            .unwrap()
-        }
-
-        #[derive(Debug)]
-        pub struct MigrationRunner {
-            migration_path: PathBuf,
-            ignored_migrations: Vec<String>,
-        }
-
-        impl MigrationRunner {
-            /// Construct a new MigrationRunner that does not apply the given migrations.
-            ///
-            /// `ignored_migrations` is any iterable of strings that describes which
-            /// migrations to be ignored.
-            pub fn new<I>(path: impl Into<PathBuf>, ignored_migrations: I) -> Self
-            where
-                I: IntoIterator,
-                I::Item: Into<String>,
-            {
-                Self {
-                    migration_path: path.into(),
-                    ignored_migrations: ignored_migrations.into_iter().map(Into::into).collect(),
-                }
-            }
-        }
-
-        impl MigrationSource<'static> for MigrationRunner {
-            fn resolve(
-                self,
-            ) -> BoxFuture<'static, Result<Vec<sqlx::migrate::Migration>, sqlx::error::BoxDynError>>
-            {
-                Box::pin(async move {
-                    let canonical = self.migration_path.canonicalize()?;
-                    let migrations_with_paths =
-                        sqlx::migrate::resolve_blocking(&canonical).unwrap();
-
-                    let migrations_with_paths = migrations_with_paths
-                        .into_iter()
-                        .filter(|(_, p)| {
-                            let path = p.to_str().unwrap();
-                            self.ignored_migrations
-                                .iter()
-                                .any(|ignored| !path.contains(ignored))
-                        })
-                        .collect::<Vec<_>>();
-
-                    Ok(migrations_with_paths.into_iter().map(|(m, _p)| m).collect())
-                })
-            }
         }
     }
 }

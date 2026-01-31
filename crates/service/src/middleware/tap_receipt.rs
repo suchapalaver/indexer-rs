@@ -44,7 +44,10 @@ mod tests {
         Router,
     };
     use axum_extra::headers::Header;
+    use base64::prelude::*;
+    use prost::Message;
     use reqwest::StatusCode;
+    use tap_aggregator::grpc::v2::SignedReceipt;
     use test_assets::create_signed_receipt_v2;
     use tower::ServiceExt;
 
@@ -55,7 +58,10 @@ mod tests {
         let middleware = from_fn(receipt_middleware);
 
         let receipt = create_signed_receipt_v2().call().await;
-        let receipt_json = serde_json::to_string(&receipt).unwrap();
+        // Encode receipt as base64-encoded protobuf (the expected header format)
+        let protobuf_receipt = SignedReceipt::from(receipt.clone());
+        let encoded = protobuf_receipt.encode_to_vec();
+        let receipt_header = BASE64_STANDARD.encode(encoded);
 
         let receipt = TapReceipt::V2(receipt);
 
@@ -73,7 +79,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/")
-                    .header(TapHeader::name(), receipt_json)
+                    .header(TapHeader::name(), receipt_header)
                     .body(Body::empty())
                     .unwrap(),
             )
