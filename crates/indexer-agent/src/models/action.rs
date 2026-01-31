@@ -15,6 +15,13 @@ pub enum ActionError {
     #[error("action already pending for deployment {deployment_id}")]
     DuplicatePendingAction { deployment_id: String },
 
+    /// Legacy actions are not supported.
+    ///
+    /// This agent only supports Horizon (V2) allocations. Legacy actions
+    /// from the V1 Staking contract cannot be executed.
+    #[error("legacy actions are not supported; this agent only supports Horizon (V2) allocations")]
+    LegacyActionNotSupported,
+
     /// Database error.
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
@@ -105,7 +112,16 @@ impl Action {
     ///
     /// Returns `ActionError::DuplicatePendingAction` if a non-terminal action
     /// already exists for this deployment (enforced by database constraint).
+    ///
+    /// Returns `ActionError::LegacyActionNotSupported` if the action is marked
+    /// as legacy (is_legacy = true). This agent only supports Horizon (V2)
+    /// allocations.
     pub async fn queue(pool: &PgPool, input: ActionInput) -> Result<Self, ActionError> {
+        // Reject legacy actions - this agent only supports Horizon (V2)
+        if input.is_legacy == Some(true) {
+            return Err(ActionError::LegacyActionNotSupported);
+        }
+
         let deployment_id = input.deployment_id.clone();
 
         sqlx::query_as::<_, Self>(
@@ -143,7 +159,7 @@ impl Action {
         .bind(&input.source)
         .bind(&input.reason)
         .bind(&input.protocol_network)
-        .bind(input.is_legacy.unwrap_or(true))
+        .bind(input.is_legacy.unwrap_or(false))
         .bind(&input.public_poi)
         .bind(input.poi_block_number)
         .fetch_one(pool)

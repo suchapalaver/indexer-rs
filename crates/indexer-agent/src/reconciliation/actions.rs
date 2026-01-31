@@ -114,6 +114,11 @@ pub async fn queue_allocation_action(
             );
             return Ok(None);
         }
+        Err(ActionError::LegacyActionNotSupported) => {
+            // This should never happen for reconciliation-queued actions since we
+            // always set is_legacy = Some(false), but handle it for completeness.
+            unreachable!("reconciliation should never queue legacy actions");
+        }
         Err(ActionError::Database(e)) => return Err(e),
     };
 
@@ -207,6 +212,17 @@ pub async fn queue_unallocation_action(
             );
             return Ok(None);
         }
+        Err(ActionError::LegacyActionNotSupported) => {
+            // Legacy unallocation was requested but this agent only supports Horizon.
+            // This can happen when is_legacy parameter is passed as true from external
+            // callers. Log and skip rather than error to maintain reconciliation loop.
+            debug!(
+                deployment = %deployment_id,
+                allocation = %allocation_id,
+                "Legacy unallocation not supported, skipping"
+            );
+            return Ok(None);
+        }
         Err(ActionError::Database(e)) => return Err(e),
     };
 
@@ -297,6 +313,17 @@ pub async fn queue_reallocation_action(
                 deployment = %deployment_id,
                 allocation = %allocation_id,
                 "Action already pending for deployment (constraint), skipping"
+            );
+            return Ok(None);
+        }
+        Err(ActionError::LegacyActionNotSupported) => {
+            // Legacy reallocation was requested but this agent only supports Horizon.
+            // This can happen when is_legacy parameter is passed as true from external
+            // callers. Log and skip rather than error to maintain reconciliation loop.
+            debug!(
+                deployment = %deployment_id,
+                allocation = %allocation_id,
+                "Legacy reallocation not supported, skipping"
             );
             return Ok(None);
         }

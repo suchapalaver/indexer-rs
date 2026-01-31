@@ -36,6 +36,10 @@ pub enum ValidationError {
     /// Allocation lifetime cannot be zero.
     #[error("allocation lifetime cannot be zero")]
     ZeroAllocationLifetime,
+
+    /// Legacy actions are not supported.
+    #[error("legacy actions are not supported; this agent only supports Horizon (V2) allocations")]
+    LegacyActionNotSupported,
 }
 
 /// Validate a deployment identifier.
@@ -228,6 +232,34 @@ pub fn validate_allocation_lifetime(lifetime: Option<u32>) -> Result<(), Validat
     Ok(())
 }
 
+/// Validate that an action is not a legacy action.
+///
+/// This agent only supports Horizon (V2) allocations. Legacy actions
+/// (from the V1 Staking contract) are rejected because the executor
+/// only implements the Horizon SubgraphService contract path.
+///
+/// # Arguments
+/// * `is_legacy` - Whether the action is marked as legacy
+///
+/// # Returns
+/// * `Ok(())` if the action is not legacy (or is_legacy is None/false)
+/// * `Err(ValidationError::LegacyActionNotSupported)` if is_legacy is true
+///
+/// # Examples
+/// ```
+/// use indexer_agent::validation::validate_not_legacy;
+///
+/// assert!(validate_not_legacy(None).is_ok());
+/// assert!(validate_not_legacy(Some(false)).is_ok());
+/// assert!(validate_not_legacy(Some(true)).is_err());
+/// ```
+pub fn validate_not_legacy(is_legacy: Option<bool>) -> Result<(), ValidationError> {
+    if is_legacy == Some(true) {
+        return Err(ValidationError::LegacyActionNotSupported);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,6 +392,19 @@ mod tests {
         assert!(matches!(
             validate_allocation_lifetime(Some(0)),
             Err(ValidationError::ZeroAllocationLifetime)
+        ));
+    }
+
+    #[test]
+    fn test_validate_not_legacy() {
+        // Non-legacy is valid
+        assert!(validate_not_legacy(None).is_ok());
+        assert!(validate_not_legacy(Some(false)).is_ok());
+
+        // Legacy is rejected
+        assert!(matches!(
+            validate_not_legacy(Some(true)),
+            Err(ValidationError::LegacyActionNotSupported)
         ));
     }
 }

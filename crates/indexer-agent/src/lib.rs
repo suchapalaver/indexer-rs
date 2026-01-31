@@ -38,5 +38,5 @@ pub use rules::{
 };
 pub use validation::{
     validate_allocation_amount, validate_allocation_lifetime, validate_deployment_id,
-    validate_protocol_network, ValidationError,
+    validate_not_legacy, validate_protocol_network, ValidationError,
 };

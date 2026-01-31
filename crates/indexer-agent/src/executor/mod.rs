@@ -18,7 +18,10 @@ mod provider;
 mod runner;
 mod transactions;
 
-pub use contracts::{HorizonStakingContract, SubgraphServiceContract};
+pub use contracts::{
+    subgraph_service_eip712_domain, AllocationIdProof, HorizonStakingContract,
+    SubgraphServiceContract,
+};
 pub use errors::{is_nonce_error, ExecutorError};
 pub use provider::ProviderCache;
 pub use runner::{ActionExecutor, ExecutorConfig};

@@ -14,6 +14,7 @@ use alloy::{
     providers::Provider,
     rpc::types::TransactionRequest,
     signers::{local::PrivateKeySigner, Signer},
+    sol_types::SolStruct,
 };
 use bip39::Mnemonic;
 use sqlx::PgPool;
@@ -22,7 +23,10 @@ use tokio::{sync::watch, time::interval};
 use tracing::{debug, error, info, warn};
 
 use super::{
-    contracts::{Controller, HorizonStaking, SubgraphService},
+    contracts::{
+        subgraph_service_eip712_domain, AllocationIdProof, Controller, HorizonStaking,
+        SubgraphService,
+    },
     errors::{is_nonce_error, ExecutorError},
     provider::{ExecutorProvider, ProviderCache},
     transactions::{build_allocate_tx, build_unallocate_tx, parse_amount, GAS_BUFFER_PERCENT},
@@ -696,24 +700,48 @@ impl ActionExecutor {
 
     /// Sign an allocation proof using the allocation wallet.
     ///
-    /// This creates a signature that proves the indexer controls the allocation ID address.
-    /// The signature is over a message containing the allocation ID.
+    /// This creates an EIP-712 typed data signature that proves the operator controls
+    /// the allocation ID address. The Horizon SubgraphService contract verifies this
+    /// signature using the EIP-712 domain:
+    /// - name: "SubgraphService"
+    /// - version: "1.0"
+    /// - chainId: the network's chain ID
+    /// - verifyingContract: the SubgraphService contract address
+    ///
+    /// The typed data structure is:
+    /// - AllocationIdProof(address indexer, address allocationId)
+    ///
+    /// The signature must be from the allocation wallet (whose address is the allocation ID).
+    /// The contract recovers the signer and verifies it equals the allocation ID.
     async fn sign_allocation_proof(
         &self,
         allocation_wallet: &PrivateKeySigner,
         allocation_id: Address,
     ) -> Result<Bytes, ExecutorError> {
-        // Create the message to sign: the allocation ID as bytes
-        // This follows the Graph Protocol pattern where the proof is a signature
-        // from the allocation wallet over its own address
-        let message = allocation_id.as_slice();
+        // Create the EIP-712 domain for SubgraphService
+        let domain = subgraph_service_eip712_domain(
+            self.config.chain_id,
+            self.config.subgraph_service_address,
+        );
 
-        // Sign the message using EIP-191 personal_sign
-        let signature = allocation_wallet.sign_message(message).await.map_err(|e| {
-            ExecutorError::TransactionBuild(format!("failed to sign allocation proof: {e}"))
-        })?;
+        // Create the allocation proof struct
+        let proof_data = AllocationIdProof {
+            indexer: self.config.indexer_address,
+            allocationId: allocation_id,
+        };
 
-        // Convert signature to bytes
+        // Compute the EIP-712 signing hash
+        let signing_hash = proof_data.eip712_signing_hash(&domain);
+
+        // Sign the hash using the allocation wallet
+        let signature = allocation_wallet
+            .sign_hash(&signing_hash)
+            .await
+            .map_err(|e| {
+                ExecutorError::TransactionBuild(format!("failed to sign allocation proof: {e}"))
+            })?;
+
+        // Convert signature to bytes (65 bytes: r, s, v)
         Ok(Bytes::from(signature.as_bytes().to_vec()))
     }
 
@@ -954,5 +982,78 @@ mod tests {
         // Should fail for too short hex
         let result = parse_deployment_id("0x1234");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_allocation_proof_eip712_structure() {
+        use alloy::{primitives::address, sol_types::SolStruct};
+
+        // Test that the AllocationIdProof struct has the correct EIP-712 type hash
+        // Expected: keccak256("AllocationIdProof(address indexer,address allocationId)")
+        let expected_type_hash =
+            alloy::primitives::keccak256("AllocationIdProof(address indexer,address allocationId)");
+
+        // Create a test proof
+        let indexer = address!("1234567890123456789012345678901234567890");
+        let allocation_id = address!("abcdefabcdefabcdefabcdefabcdefabcdefabcd");
+
+        let proof = AllocationIdProof {
+            indexer,
+            allocationId: allocation_id,
+        };
+
+        // The eip712_type_hash should match expected
+        // Note: eip712_type_hash is an instance method from SolStruct trait
+        assert_eq!(proof.eip712_type_hash(), expected_type_hash);
+
+        // Create a domain matching SubgraphService contract
+        let domain = subgraph_service_eip712_domain(
+            42161,                                                // Arbitrum chain ID
+            address!("94dc3B65AF05a7A8d36B877eb5DE68B6B16B6389"), // Example SubgraphService address
+        );
+
+        // Compute signing hash (this is what gets signed)
+        let signing_hash = proof.eip712_signing_hash(&domain);
+
+        // Verify signing hash is non-zero (actual correctness is verified by contract acceptance)
+        assert_ne!(signing_hash, alloy::primitives::B256::ZERO);
+    }
+
+    #[tokio::test]
+    async fn test_allocation_proof_signature_recovery() {
+        use alloy::{primitives::address, signers::local::PrivateKeySigner, sol_types::SolStruct};
+
+        // Create a test allocation wallet
+        let allocation_wallet = PrivateKeySigner::random();
+        let allocation_id = allocation_wallet.address();
+        let indexer = address!("1234567890123456789012345678901234567890");
+        let subgraph_service = address!("94dc3B65AF05a7A8d36B877eb5DE68B6B16B6389");
+
+        // Create the EIP-712 domain for SubgraphService
+        let domain = subgraph_service_eip712_domain(42161, subgraph_service);
+
+        // Create the allocation proof struct
+        let proof_data = AllocationIdProof {
+            indexer,
+            allocationId: allocation_id,
+        };
+
+        // Compute the EIP-712 signing hash
+        let signing_hash = proof_data.eip712_signing_hash(&domain);
+
+        // Sign the hash using the allocation wallet
+        let signature = allocation_wallet.sign_hash(&signing_hash).await.unwrap();
+
+        // Verify we can recover the signer from the signature
+        let recovered = signature
+            .recover_address_from_prehash(&signing_hash)
+            .expect("should recover signer");
+
+        // The recovered signer should be the allocation ID (allocation wallet's address)
+        // This is exactly what the SubgraphService contract verifies
+        assert_eq!(
+            recovered, allocation_id,
+            "Recovered signer should equal allocation ID"
+        );
     }
 }

@@ -7,6 +7,41 @@
 //! the SubgraphService and HorizonStaking contracts.
 
 use alloy::sol;
+use thegraph_core::alloy::sol_types::{eip712_domain, Eip712Domain};
+
+/// Create an EIP-712 domain for the SubgraphService contract.
+///
+/// This domain is used for signing allocation proofs in Horizon.
+/// The domain matches the one used by the SubgraphService contract:
+/// - name: "SubgraphService"
+/// - version: "1.0"
+/// - chainId: the network's chain ID
+/// - verifyingContract: the SubgraphService contract address
+pub fn subgraph_service_eip712_domain(
+    chain_id: u64,
+    subgraph_service_address: alloy::primitives::Address,
+) -> Eip712Domain {
+    eip712_domain! {
+        name: "SubgraphService",
+        version: "1.0",
+        chain_id: chain_id,
+        verifying_contract: subgraph_service_address,
+    }
+}
+
+sol! {
+    /// EIP-712 typed data for allocation ID proofs.
+    ///
+    /// This struct is used to sign allocation proofs for the SubgraphService contract.
+    /// The proof demonstrates that the operator controls the allocation ID address.
+    ///
+    /// Type hash: keccak256("AllocationIdProof(address indexer,address allocationId)")
+    #[derive(Debug, PartialEq)]
+    struct AllocationIdProof {
+        address indexer;
+        address allocationId;
+    }
+}
 
 sol! {
     /// SubgraphService contract for Horizon (V2) allocation management.

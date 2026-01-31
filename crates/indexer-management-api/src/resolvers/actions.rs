@@ -93,6 +93,12 @@ pub struct Action {
     pub transaction: Option<String>,
     pub failure_reason: Option<String>,
     pub protocol_network: String,
+    /// Whether this is a legacy (V1) allocation. Always false for this agent.
+    pub is_legacy: bool,
+    /// Public POI for unallocation (Horizon only)
+    pub public_poi: Option<String>,
+    /// POI block number for unallocation
+    pub poi_block_number: Option<i32>,
 }
 
 impl From<AgentAction> for Action {
@@ -112,6 +118,9 @@ impl From<AgentAction> for Action {
             transaction: action.transaction,
             failure_reason: action.failure_reason,
             protocol_network: action.protocol_network,
+            is_legacy: action.is_legacy,
+            public_poi: action.public_poi,
+            poi_block_number: action.poi_block_number,
         }
     }
 }
@@ -129,6 +138,10 @@ pub struct ActionInput {
     pub reason: String,
     pub priority: Option<i32>,
     pub protocol_network: String,
+    /// Public POI for unallocation (Horizon only)
+    pub public_poi: Option<String>,
+    /// POI block number for unallocation
+    pub poi_block_number: Option<i32>,
 }
 
 impl From<ActionInput> for AgentActionInput {
@@ -144,9 +157,11 @@ impl From<ActionInput> for AgentActionInput {
             reason: input.reason,
             priority: input.priority,
             protocol_network: input.protocol_network,
-            is_legacy: None,
-            public_poi: None,
-            poi_block_number: None,
+            // Explicitly set to false - this agent only supports Horizon (V2) allocations.
+            // Legacy (V1) actions are rejected by Action::queue().
+            is_legacy: Some(false),
+            public_poi: input.public_poi,
+            poi_block_number: input.poi_block_number,
         }
     }
 }
