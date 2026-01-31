@@ -313,7 +313,19 @@ impl Action {
         .await
     }
 
-    /// Update action status
+    /// Update action status.
+    ///
+    /// # Transaction Hash Immutability
+    ///
+    /// Once a transaction hash is set, it cannot be overwritten. This preserves
+    /// the audit trail and ensures clarity about which transaction was executed.
+    /// If a transaction hash is provided but one already exists, the existing
+    /// hash is preserved and the new value is ignored.
+    ///
+    /// # Failure Reason
+    ///
+    /// Failure reasons can be updated on retry, so new values overwrite existing
+    /// ones (unlike transaction hashes).
     pub async fn update_status(
         pool: &PgPool,
         id: i32,
@@ -325,8 +337,11 @@ impl Action {
         sqlx::query_as::<_, Self>(
             r#"
             UPDATE "Actions"
-            SET status = $3, transaction = COALESCE($4, transaction),
-                failure_reason = COALESCE($5, failure_reason), updated_at = NOW()
+            SET status = $3,
+                -- Transaction hash is immutable: preserve existing value if set
+                transaction = COALESCE(transaction, $4),
+                failure_reason = COALESCE($5, failure_reason),
+                updated_at = NOW()
             WHERE id = $1 AND protocol_network = $2
             RETURNING *
             "#,
