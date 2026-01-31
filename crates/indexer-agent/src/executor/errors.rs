@@ -123,6 +123,14 @@ pub enum ExecutorError {
         max_gwei: u64,
         waited_secs: u64,
     },
+
+    /// All allocation ID indices are exhausted for this deployment/epoch
+    #[error("all {max_index} allocation ID indices exhausted for deployment {deployment} at epoch {epoch}")]
+    AllocationIdExhausted {
+        deployment: String,
+        epoch: u64,
+        max_index: u64,
+    },
 }
 
 /// Patterns that indicate a nonce-related error.
@@ -249,5 +257,19 @@ mod tests {
         assert!(message.contains("300"));
         assert!(message.contains("gwei"));
         assert!(message.contains("exceeds threshold"));
+    }
+
+    #[test]
+    fn test_allocation_id_exhausted_error() {
+        let error = ExecutorError::AllocationIdExhausted {
+            deployment: "QmSWxvd8SaQK6qZKJ7xtfxCCGoRzGnoi2WNzmJYYJW9BXY".to_string(),
+            epoch: 953,
+            max_index: 100,
+        };
+        let message = error.to_string();
+        assert!(message.contains("100"));
+        assert!(message.contains("953"));
+        assert!(message.contains("QmSWxvd8SaQK6qZKJ7xtfxCCGoRzGnoi2WNzmJYYJW9BXY"));
+        assert!(message.contains("exhausted"));
     }
 }

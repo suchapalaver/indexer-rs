@@ -51,6 +51,10 @@ const DEFAULT_GAS_PRICE_WAIT_TIMEOUT_SECS: u64 = 300;
 /// Poll interval when waiting for gas price to drop.
 const GAS_PRICE_POLL_INTERVAL: Duration = Duration::from_secs(15);
 
+/// Maximum allocation index to try when generating allocation IDs.
+/// Matches TypeScript behavior of checking [0..100).
+const MAX_ALLOCATION_INDEX: u64 = 100;
+
 /// Configuration for the action executor.
 #[derive(Debug, Clone)]
 pub struct ExecutorConfig {
@@ -119,9 +123,6 @@ pub struct ActionExecutor {
 
     /// Watch receiver for current epoch number
     epoch_rx: watch::Receiver<u64>,
-
-    /// Counter for allocation index (used in key derivation)
-    allocation_index: std::sync::atomic::AtomicU64,
 }
 
 impl ActionExecutor {
@@ -146,7 +147,6 @@ impl ActionExecutor {
             signer,
             config,
             epoch_rx,
-            allocation_index: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -346,9 +346,9 @@ impl ActionExecutor {
         // Parse deployment ID (convert from IPFS hash to bytes32)
         let deployment_id = parse_deployment_id(&action.deployment_id)?;
 
-        // Generate allocation ID and proof
+        // Generate allocation ID and proof, checking against existing on-chain allocations
         let (allocation_id, proof) = self
-            .generate_allocation_id_and_proof(&deployment_id)
+            .generate_allocation_id_and_proof(&deployment_id, provider)
             .await?;
 
         // Build transaction
@@ -639,13 +639,16 @@ impl ActionExecutor {
     /// Generate an allocation ID and its corresponding proof.
     ///
     /// The allocation ID is the address of a wallet derived from the operator mnemonic,
-    /// the current epoch, the deployment ID, and an incrementing index.
+    /// the current epoch, the deployment ID, and an index. This method tries indices
+    /// from 0 to 99, checking each derived allocation ID against the on-chain contract
+    /// to find one that is not already in use.
     ///
     /// The proof is an EIP-712 signature over the allocation ID, signed by the derived
     /// wallet. This proves that the indexer controls the allocation ID address.
     async fn generate_allocation_id_and_proof(
         &self,
         deployment_id: &FixedBytes<32>,
+        provider: &ExecutorProvider,
     ) -> Result<(Address, Bytes), ExecutorError> {
         // Get the operator mnemonic
         let mnemonic =
@@ -660,42 +663,75 @@ impl ActionExecutor {
         // Get current epoch
         let current_epoch = *self.epoch_rx.borrow();
 
-        // Get next allocation index and increment atomically
-        let index = self
-            .allocation_index
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-
         // Convert deployment ID to DeploymentId type for key derivation
         let deployment = DeploymentId::new(*deployment_id);
 
-        // Derive the allocation key pair using the attestation crate's derivation logic
-        let allocation_wallet = indexer_attestation::derive_key_pair(
-            mnemonic.to_string().as_str(),
-            current_epoch,
-            &deployment,
-            index,
-        )
-        .map_err(|e| {
-            ExecutorError::TransactionBuild(format!("failed to derive allocation key: {e}"))
-        })?;
+        // Create contract instance for checking existing allocations
+        let subgraph_service = SubgraphService::new(self.config.subgraph_service_address, provider);
 
-        let allocation_id = allocation_wallet.address();
+        // Try indices [0..MAX_ALLOCATION_INDEX) until we find an unused allocation ID
+        for index in 0..MAX_ALLOCATION_INDEX {
+            // Derive the allocation key pair using the attestation crate's derivation logic
+            let allocation_wallet = indexer_attestation::derive_key_pair(
+                mnemonic.to_string().as_str(),
+                current_epoch,
+                &deployment,
+                index,
+            )
+            .map_err(|e| {
+                ExecutorError::TransactionBuild(format!("failed to derive allocation key: {e}"))
+            })?;
 
-        // Sign the allocation ID to create the proof
-        // The proof demonstrates that the operator controls the allocation ID
-        let proof = self
-            .sign_allocation_proof(&allocation_wallet, allocation_id)
-            .await?;
+            let allocation_id = allocation_wallet.address();
 
-        info!(
-            allocation_id = %allocation_id,
-            epoch = current_epoch,
-            index = index,
+            // Check if this allocation ID is already in use on-chain
+            let allocation = subgraph_service
+                .getAllocation(allocation_id)
+                .call()
+                .await
+                .map_err(|e| {
+                    ExecutorError::ContractCall(format!("getAllocation check failed: {e}"))
+                })?;
+
+            // If indexer is zero address, the allocation doesn't exist - we can use this ID
+            if allocation.indexer == Address::ZERO {
+                // Sign the allocation ID to create the proof
+                let proof = self
+                    .sign_allocation_proof(&allocation_wallet, allocation_id)
+                    .await?;
+
+                info!(
+                    allocation_id = %allocation_id,
+                    epoch = current_epoch,
+                    index = index,
+                    deployment = %deployment,
+                    "Generated allocation ID and proof"
+                );
+
+                return Ok((allocation_id, proof));
+            }
+
+            debug!(
+                allocation_id = %allocation_id,
+                index = index,
+                existing_indexer = %allocation.indexer,
+                "Allocation ID already in use, trying next index"
+            );
+        }
+
+        // All indices exhausted
+        warn!(
             deployment = %deployment,
-            "Generated allocation ID and proof"
+            epoch = current_epoch,
+            max_index = MAX_ALLOCATION_INDEX,
+            "All allocation ID indices exhausted"
         );
 
-        Ok((allocation_id, proof))
+        Err(ExecutorError::AllocationIdExhausted {
+            deployment: deployment.to_string(),
+            epoch: current_epoch,
+            max_index: MAX_ALLOCATION_INDEX,
+        })
     }
 
     /// Sign an allocation proof using the allocation wallet.
