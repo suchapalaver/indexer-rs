@@ -131,6 +131,14 @@ pub enum ExecutorError {
         epoch: u64,
         max_index: u64,
     },
+
+    /// POI resolution failed and force close was not requested
+    #[error("POI resolution failed for deployment {deployment}: {reason}. Use force=true to close without POI (forfeits indexing rewards)")]
+    PoiResolutionFailed { deployment: String, reason: String },
+
+    /// POI is required but was not provided
+    #[error("POI is required for unallocate action {action_id}. Either resolve POI or set force=true to close without POI")]
+    PoiRequired { action_id: i32 },
 }
 
 /// Patterns that indicate a nonce-related error.
@@ -170,6 +178,27 @@ mod tests {
         assert!(!is_nonce_error("insufficient funds"));
         assert!(!is_nonce_error("gas limit exceeded"));
         assert!(!is_nonce_error("contract reverted"));
+    }
+
+    #[test]
+    fn test_poi_resolution_failed_error() {
+        let error = ExecutorError::PoiResolutionFailed {
+            deployment: "QmTest123".to_string(),
+            reason: "graph-node unreachable".to_string(),
+        };
+        let message = error.to_string();
+        assert!(message.contains("QmTest123"));
+        assert!(message.contains("graph-node unreachable"));
+        assert!(message.contains("force=true"));
+    }
+
+    #[test]
+    fn test_poi_required_error() {
+        let error = ExecutorError::PoiRequired { action_id: 42 };
+        let message = error.to_string();
+        assert!(message.contains("42"));
+        assert!(message.contains("POI is required"));
+        assert!(message.contains("force=true"));
     }
 
     #[test]

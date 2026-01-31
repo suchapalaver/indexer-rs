@@ -15,6 +15,7 @@
 pub mod executor;
 pub mod metrics;
 pub mod models;
+pub mod poi;
 pub mod reconciliation;
 pub mod rules;
 pub mod validation;
@@ -27,6 +28,7 @@ pub use models::{
     Action, ActionError, ActionFilter, ActionInput, ActionStatus, ActionType, IdentifierType,
     IndexingDecisionBasis, IndexingRule, IndexingRuleInput, POIDispute, POIDisputeInput,
 };
+pub use poi::{resolve_poi_for_close, PoiError, PoiResolver, PoiResult};
 pub use reconciliation::{
     queue_allocation_action, queue_unallocation_action, reconcile_deployment_allocations,
     reconcile_once, run_reconciliation_loop, ActiveAllocation, AllocationAction,

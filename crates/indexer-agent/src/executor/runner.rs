@@ -21,6 +21,7 @@ use sqlx::PgPool;
 use thegraph_core::DeploymentId;
 use tokio::{sync::watch, time::interval};
 use tracing::{debug, error, info, warn};
+use url::Url;
 
 use super::{
     contracts::{
@@ -34,6 +35,7 @@ use super::{
 use crate::{
     metrics,
     models::{Action, ActionStatus, ActionType},
+    poi::PoiResolver,
 };
 
 /// Maximum number of retries for receipt polling.
@@ -88,6 +90,10 @@ pub struct ExecutorConfig {
 
     /// Maximum time (seconds) to wait for acceptable gas price.
     pub gas_price_wait_timeout_secs: u64,
+
+    /// Graph-node status URL for POI resolution.
+    /// Required for closing allocations with proper POI.
+    pub graph_node_status_url: Option<Url>,
 }
 
 impl Default for ExecutorConfig {
@@ -103,6 +109,7 @@ impl Default for ExecutorConfig {
             operator_mnemonic: None,
             max_gas_price_gwei: None,
             gas_price_wait_timeout_secs: DEFAULT_GAS_PRICE_WAIT_TIMEOUT_SECS,
+            graph_node_status_url: None,
         }
     }
 }
@@ -123,6 +130,9 @@ pub struct ActionExecutor {
 
     /// Watch receiver for current epoch number
     epoch_rx: watch::Receiver<u64>,
+
+    /// POI resolver for querying graph-node
+    poi_resolver: Option<PoiResolver>,
 }
 
 impl ActionExecutor {
@@ -141,12 +151,26 @@ impl ActionExecutor {
         config: ExecutorConfig,
         epoch_rx: watch::Receiver<u64>,
     ) -> Self {
+        // Create POI resolver if graph-node status URL is configured
+        let poi_resolver = config
+            .graph_node_status_url
+            .as_ref()
+            .map(|url| PoiResolver::new(url.clone()));
+
+        if poi_resolver.is_none() {
+            warn!(
+                "Graph-node status URL not configured. \
+                POI resolution will be unavailable - all unallocate actions will require force=true"
+            );
+        }
+
         Self {
             pool,
             provider_cache,
             signer,
             config,
             epoch_rx,
+            poi_resolver,
         }
     }
 
@@ -365,6 +389,12 @@ impl ActionExecutor {
     }
 
     /// Execute an unallocate action.
+    ///
+    /// POI Resolution Behavior:
+    /// - If `action.poi` is set, use that POI directly (Management API or manual override)
+    /// - If `action.force` is true, use zero POI (forfeits indexing rewards)
+    /// - Otherwise, resolve POI from graph-node at the deployment's latest synced block
+    /// - If POI resolution fails and force=false, the action fails with an error
     async fn execute_unallocate(
         &self,
         action: &Action,
@@ -383,23 +413,31 @@ impl ActionExecutor {
             .parse()
             .map_err(|e| ExecutorError::TransactionBuild(format!("invalid allocation ID: {e}")))?;
 
-        // Parse deployment ID for verification
-        let deployment_id = parse_deployment_id(&action.deployment_id)?;
+        // Parse deployment ID for verification and POI resolution
+        let deployment_id_bytes = parse_deployment_id(&action.deployment_id)?;
+        let deployment_id: DeploymentId = action
+            .deployment_id
+            .parse()
+            .map_err(|e| ExecutorError::TransactionBuild(format!("invalid deployment ID: {e}")))?;
 
         // Verify allocation exists and is valid before building transaction
-        self.verify_allocation_exists(provider, allocation_id, Some(&deployment_id))
+        self.verify_allocation_exists(provider, allocation_id, Some(&deployment_id_bytes))
             .await?;
 
-        // Parse POI
-        let poi = if let Some(poi_str) = &action.poi {
-            poi_str
-                .parse()
-                .map_err(|e| ExecutorError::TransactionBuild(format!("invalid POI: {e}")))?
-        } else {
-            FixedBytes::ZERO // Force close with zero POI
-        };
+        // Resolve POI based on action parameters
+        let (poi, poi_block_number, public_poi) =
+            self.resolve_poi_for_action(action, &deployment_id).await?;
 
-        let poi_block_number = action.poi_block_number.unwrap_or(0) as u64;
+        info!(
+            action_id = action.id,
+            allocation_id = %allocation_id,
+            deployment = %action.deployment_id,
+            poi = %poi,
+            poi_block_number = poi_block_number,
+            has_public_poi = public_poi.is_some(),
+            force = action.force.unwrap_or(false),
+            "Resolved POI for unallocate action"
+        );
 
         // Check if over-allocated
         let contract = SubgraphService::new(self.config.subgraph_service_address, provider);
@@ -415,12 +453,96 @@ impl ActionExecutor {
             allocation_id,
             poi,
             poi_block_number,
-            None,
+            public_poi,
             is_over_allocated,
         );
 
         // Send transaction
         self.send_transaction(provider, calldata).await
+    }
+
+    /// Resolve POI for an unallocate or reallocate action.
+    ///
+    /// This method implements the POI resolution logic:
+    /// 1. If `action.poi` is set, use that POI directly (explicit override)
+    /// 2. If `action.force` is true, return zero POI (force close)
+    /// 3. Otherwise, query graph-node for POI at the latest synced block
+    ///
+    /// # Returns
+    /// A tuple of (poi, block_number, public_poi) where:
+    /// - `poi` is the POI hash to submit (bytes32)
+    /// - `block_number` is the block number for the POI
+    /// - `public_poi` is the optional public POI for metadata
+    async fn resolve_poi_for_action(
+        &self,
+        action: &Action,
+        deployment: &DeploymentId,
+    ) -> Result<(FixedBytes<32>, u64, Option<FixedBytes<32>>), ExecutorError> {
+        // Case 1: Explicit POI provided in action (from Management API or manual queue)
+        if let Some(poi_str) = &action.poi {
+            let poi: FixedBytes<32> = poi_str
+                .parse()
+                .map_err(|e| ExecutorError::TransactionBuild(format!("invalid POI: {e}")))?;
+
+            let block_number = action.poi_block_number.unwrap_or(0) as u64;
+
+            // Parse public_poi if provided
+            let public_poi = if let Some(public_poi_str) = &action.public_poi {
+                Some(public_poi_str.parse().map_err(|e| {
+                    ExecutorError::TransactionBuild(format!("invalid public POI: {e}"))
+                })?)
+            } else {
+                None
+            };
+
+            debug!(
+                action_id = action.id,
+                poi = %poi,
+                block_number = block_number,
+                "Using explicit POI from action"
+            );
+
+            return Ok((poi, block_number, public_poi));
+        }
+
+        // Case 2: Force close - use zero POI (forfeits indexing rewards)
+        if action.force == Some(true) {
+            warn!(
+                action_id = action.id,
+                deployment = %deployment,
+                "Force closing allocation with zero POI - indexing rewards will be forfeited"
+            );
+            return Ok((FixedBytes::ZERO, 0, None));
+        }
+
+        // Case 3: Resolve POI from graph-node
+        let Some(ref poi_resolver) = self.poi_resolver else {
+            return Err(ExecutorError::PoiRequired {
+                action_id: action.id,
+            });
+        };
+
+        debug!(
+            action_id = action.id,
+            deployment = %deployment,
+            "Resolving POI from graph-node"
+        );
+
+        let poi_result = poi_resolver
+            .resolve_poi_at_latest(deployment)
+            .await
+            .map_err(|e| ExecutorError::PoiResolutionFailed {
+                deployment: deployment.to_string(),
+                reason: e.to_string(),
+            })?;
+
+        // For public POI resolution, we use the public POI as both the POI and public_poi
+        // This is because graph-node returns the public POI, which is what we submit
+        Ok((
+            poi_result.public_poi,
+            poi_result.block_number,
+            Some(poi_result.public_poi),
+        ))
     }
 
     /// Execute a reallocate action.
@@ -982,6 +1104,7 @@ mod tests {
         assert_eq!(config.indexer_address, Address::ZERO);
         assert!(config.max_gas_price_gwei.is_none());
         assert_eq!(config.gas_price_wait_timeout_secs, 300);
+        assert!(config.graph_node_status_url.is_none());
     }
 
     #[test]
