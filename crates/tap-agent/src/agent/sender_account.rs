@@ -126,6 +126,22 @@ pub(crate) static ALLOCATION_RECONCILIATION_RUNS: LazyLock<IntCounterVec> = Lazy
     )
     .unwrap()
 });
+pub(crate) static RAV_REORG_REVERTS: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    register_int_counter_vec!(
+        "tap_rav_reorg_reverts_total",
+        "Number of RAVs reverted due to chain reorganization",
+        &["sender"]
+    )
+    .unwrap()
+});
+pub(crate) static RAV_REDEMPTIONS_MARKED: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    register_int_counter_vec!(
+        "tap_rav_redemptions_marked_total",
+        "Number of RAVs marked as redeemed",
+        &["sender"]
+    )
+    .unwrap()
+});
 
 const INITIAL_RAV_REQUEST_CONCURRENT: usize = 1;
 const TAP_V1: &str = "v1";
@@ -243,6 +259,9 @@ pub enum SenderAccountMessage {
     /// Periodic reconciliation to detect stale allocations.
     /// This ensures recovery after subgraph connectivity issues.
     ReconcileAllocations,
+    /// Periodic reconciliation to detect RAV state mismatches from chain reorgs.
+    /// Compares locally-marked-redeemed RAVs against escrow subgraph state.
+    ReconcileRavReorgs,
     #[cfg(test)]
     /// Returns the sender fee tracker, used for tests
     GetSenderFeeTracker(
@@ -793,6 +812,231 @@ impl State {
             .map(|allocation| Address::from_str(&allocation.id))
             .collect::<Result<HashSet<_>, _>>()?)
     }
+
+    /// Mark a RAV as final (redeemed) in the database.
+    ///
+    /// Called when we detect that a RAV has been redeemed on-chain by comparing
+    /// our local value_aggregate with the escrow subgraph's valueAggregate.
+    #[allow(dead_code)]
+    async fn mark_rav_as_final(&self, collection_id: &str) -> anyhow::Result<()> {
+        match self.sender_type {
+            SenderType::Legacy => {
+                // V1/Legacy support has been removed - no-op
+                Ok(())
+            }
+            SenderType::Horizon => {
+                if !self.config.tap_mode.is_horizon() {
+                    return Ok(());
+                }
+
+                let result = sqlx::query(
+                    r#"
+                    UPDATE tap_horizon_ravs
+                    SET final = true, redeemed_at = NOW()
+                    WHERE collection_id = $1
+                    AND payer = $2
+                    AND service_provider = $3
+                    AND data_service = $4
+                    AND last = true
+                    AND final = false
+                    "#,
+                )
+                .bind(collection_id)
+                .bind(self.sender.encode_hex())
+                .bind(self.config.indexer_address.encode_hex())
+                .bind(self.config.tap_mode.subgraph_service_address.encode_hex())
+                .execute(&self.pgpool)
+                .await
+                .context("Failed to mark RAV as final")?;
+
+                if result.rows_affected() > 0 {
+                    tracing::info!(
+                        sender = %self.sender,
+                        collection_id = %collection_id,
+                        "Marked RAV as redeemed (final=true)"
+                    );
+                    RAV_REDEMPTIONS_MARKED
+                        .with_label_values(&[&self.sender.to_string()])
+                        .inc();
+                }
+
+                Ok(())
+            }
+        }
+    }
+
+    /// Revert a RAV from final back to pending state (reorg recovery).
+    ///
+    /// Called when we detect a chain reorganization has reverted a RAV redemption.
+    /// The subgraph shows a lower valueAggregate than we recorded when marking final.
+    async fn revert_rav_to_pending(&self, collection_id: &str) -> anyhow::Result<()> {
+        match self.sender_type {
+            SenderType::Legacy => {
+                // V1/Legacy support has been removed - no-op
+                Ok(())
+            }
+            SenderType::Horizon => {
+                if !self.config.tap_mode.is_horizon() {
+                    return Ok(());
+                }
+
+                let result = sqlx::query(
+                    r#"
+                    UPDATE tap_horizon_ravs
+                    SET final = false, redeemed_at = NULL
+                    WHERE collection_id = $1
+                    AND payer = $2
+                    AND service_provider = $3
+                    AND data_service = $4
+                    AND final = true
+                    "#,
+                )
+                .bind(collection_id)
+                .bind(self.sender.encode_hex())
+                .bind(self.config.indexer_address.encode_hex())
+                .bind(self.config.tap_mode.subgraph_service_address.encode_hex())
+                .execute(&self.pgpool)
+                .await
+                .context("Failed to revert RAV to pending")?;
+
+                if result.rows_affected() > 0 {
+                    tracing::warn!(
+                        sender = %self.sender,
+                        collection_id = %collection_id,
+                        "Reverted RAV due to chain reorg (final=false)"
+                    );
+                    RAV_REORG_REVERTS
+                        .with_label_values(&[&self.sender.to_string()])
+                        .inc();
+                }
+
+                Ok(())
+            }
+        }
+    }
+
+    /// Reconcile RAV state against escrow subgraph to detect chain reorgs.
+    ///
+    /// This function:
+    /// 1. Fetches all RAVs marked as final (redeemed) in the database
+    /// 2. Queries the escrow subgraph for their current on-chain state
+    /// 3. Reverts any RAVs where the on-chain valueAggregate is less than our local value
+    ///    (indicating the redemption transaction was reverted by a chain reorg)
+    async fn reconcile_rav_reorgs(&self) -> anyhow::Result<()> {
+        // Only process Horizon RAVs
+        if !matches!(self.sender_type, SenderType::Horizon) || !self.config.tap_mode.is_horizon() {
+            return Ok(());
+        }
+
+        // 1. Fetch all RAVs marked as final (redeemed) from database
+        let final_ravs: Vec<(String, bigdecimal::BigDecimal)> = sqlx::query_as(
+            r#"
+            SELECT collection_id, value_aggregate
+            FROM tap_horizon_ravs
+            WHERE payer = $1
+            AND service_provider = $2
+            AND data_service = $3
+            AND final = true
+            "#,
+        )
+        .bind(self.sender.encode_hex())
+        .bind(self.config.indexer_address.encode_hex())
+        .bind(self.config.tap_mode.subgraph_service_address.encode_hex())
+        .fetch_all(&self.pgpool)
+        .await
+        .context("Failed to fetch final RAVs")?;
+
+        if final_ravs.is_empty() {
+            return Ok(());
+        }
+
+        // 2. Query escrow subgraph for current state
+        let collection_ids: Vec<String> = final_ravs
+            .iter()
+            .filter_map(|(collection_id, _)| {
+                CollectionId::from_str(collection_id)
+                    .ok()
+                    .map(|c| c.as_address().to_string())
+            })
+            .collect();
+
+        if collection_ids.is_empty() {
+            return Ok(());
+        }
+
+        use indexer_query::latest_ravs_v2::{self, LatestRavs};
+
+        let data_service = self.config.tap_mode.subgraph_service_address;
+        let subgraph_response = self
+            .escrow_subgraph
+            .query::<LatestRavs, _>(latest_ravs_v2::Variables {
+                payer: format!("{:x?}", self.sender),
+                data_service: format!("{data_service:x?}"),
+                service_provider: format!("{:x?}", self.config.indexer_address),
+                collection_ids,
+            })
+            .await;
+
+        let subgraph_ravs: HashMap<String, u128> = match subgraph_response {
+            Ok(Ok(response)) => response
+                .latest_ravs
+                .into_iter()
+                .filter_map(|rav| {
+                    let value = rav.value_aggregate.parse::<u128>().ok()?;
+                    Some((rav.id.to_lowercase(), value))
+                })
+                .collect(),
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    error = %e,
+                    sender = %self.sender,
+                    "Failed to query subgraph for RAV reorg reconciliation"
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    sender = %self.sender,
+                    "Failed to execute subgraph query for RAV reorg reconciliation"
+                );
+                return Ok(());
+            }
+        };
+
+        // 3. Check for reorgs: if subgraph value < our final value, a reorg happened
+        for (collection_id_str, value_aggregate) in final_ravs {
+            let local_value = value_aggregate
+                .to_bigint()
+                .and_then(|v: bigdecimal::num_bigint::BigInt| v.to_u128())
+                .unwrap_or(0);
+
+            // Convert collection_id to address format for lookup
+            let lookup_key = CollectionId::from_str(&collection_id_str)
+                .ok()
+                .map(|c| c.as_address().to_string().to_lowercase());
+
+            let Some(lookup_key) = lookup_key else {
+                continue;
+            };
+
+            // Check if subgraph shows less value than our local state
+            let subgraph_value = subgraph_ravs.get(&lookup_key).copied().unwrap_or(0);
+
+            if subgraph_value < local_value {
+                tracing::warn!(
+                    sender = %self.sender,
+                    collection_id = %collection_id_str,
+                    local_value = %local_value,
+                    subgraph_value = %subgraph_value,
+                    "Detected RAV reorg: subgraph value less than local final value"
+                );
+                self.revert_rav_to_pending(&collection_id_str).await?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Actor implementation for [SenderAccount]
@@ -970,7 +1214,8 @@ impl Actor for SenderAccount {
                                     .await
                                 {
                                     Ok(Ok(response)) => {
-                                        // Create a map of our current RAVs for easy lookup
+                                        // Create maps of our current RAVs for easy lookup
+                                        // One map keyed by address (for filtering), one by collection_id (for marking final)
                                         let our_ravs: HashMap<String, u128> = last_non_final_ravs
                                             .iter()
                                             .map(|(collection_id, value)| {
@@ -982,8 +1227,22 @@ impl Actor for SenderAccount {
                                             })
                                             .collect();
 
+                                        // Also create a reverse map from address to original collection_id
+                                        let addr_to_collection: HashMap<String, &AllocationId> =
+                                            last_non_final_ravs
+                                                .iter()
+                                                .map(|(collection_id, _)| {
+                                                    (
+                                                        collection_id.address().to_string(),
+                                                        collection_id,
+                                                    )
+                                                })
+                                                .collect();
+
                                         // Check which RAVs have been updated (indicating redemption)
                                         let mut finalized_allocation_ids = vec![];
+                                        let mut collection_ids_to_mark_final = vec![];
+
                                         for rav in response.latest_ravs {
                                             if let Some(&our_value) = our_ravs.get(&rav.id) {
                                                 // If the subgraph RAV has higher value, our RAV was redeemed
@@ -1001,11 +1260,72 @@ impl Actor for SenderAccount {
                                                             .into_inner();
                                                             finalized_allocation_ids
                                                                 .push(format!("{addr:x?}"));
+
+                                                            // Track the collection_id to mark as final
+                                                            if let Some(AllocationId::Horizon(
+                                                                cid,
+                                                            )) = addr_to_collection.get(&rav.id)
+                                                            {
+                                                                collection_ids_to_mark_final
+                                                                    .push(cid.encode_hex());
+                                                            }
                                                         }
                                                     }
                                                 }
                                             }
                                         }
+
+                                        // Mark redeemed RAVs as final in the database
+                                        for collection_id in &collection_ids_to_mark_final {
+                                            let result = sqlx::query(
+                                                r#"
+                                                UPDATE tap_horizon_ravs
+                                                SET final = true, redeemed_at = NOW()
+                                                WHERE collection_id = $1
+                                                AND payer = $2
+                                                AND service_provider = $3
+                                                AND data_service = $4
+                                                AND last = true
+                                                AND final = false
+                                                "#,
+                                            )
+                                            .bind(collection_id)
+                                            .bind(sender_id.encode_hex())
+                                            .bind(config.indexer_address.encode_hex())
+                                            .bind(
+                                                config
+                                                    .tap_mode
+                                                    .subgraph_service_address
+                                                    .encode_hex(),
+                                            )
+                                            .execute(&pgpool)
+                                            .await;
+
+                                            match result {
+                                                Ok(r) if r.rows_affected() > 0 => {
+                                                    tracing::info!(
+                                                        sender = %sender_id,
+                                                        collection_id = %collection_id,
+                                                        "Marked RAV as redeemed (final=true)"
+                                                    );
+                                                    RAV_REDEMPTIONS_MARKED
+                                                        .with_label_values(
+                                                            &[&sender_id.to_string()],
+                                                        )
+                                                        .inc();
+                                                }
+                                                Ok(_) => {}
+                                                Err(e) => {
+                                                    tracing::error!(
+                                                        error = %e,
+                                                        sender = %sender_id,
+                                                        collection_id = %collection_id,
+                                                        "Failed to mark RAV as final"
+                                                    );
+                                                }
+                                            }
+                                        }
+
                                         finalized_allocation_ids
                                     }
                                     Ok(Err(e)) => {
@@ -1143,8 +1463,25 @@ impl Actor for SenderAccount {
             let mut interval = tokio::time::interval(reconciliation_interval);
             // Skip the first tick (which fires immediately)
             interval.tick().await;
+
+            // Run RAV reorg reconciliation at startup to catch reorgs during downtime
+            tracing::info!(
+                sender = %sender_for_log,
+                "Running initial RAV reorg reconciliation at startup"
+            );
+            if let Err(e) = myself_reconcile.cast(SenderAccountMessage::ReconcileRavReorgs) {
+                tracing::error!(
+                    error = ?e,
+                    sender = %sender_for_log,
+                    "Error sending initial ReconcileRavReorgs message"
+                );
+            }
+
+            let mut tick_count: u64 = 0;
             loop {
                 interval.tick().await;
+                tick_count += 1;
+
                 tracing::info!(
                     sender = %sender_for_log,
                     "Running periodic allocation reconciliation"
@@ -1156,6 +1493,24 @@ impl Actor for SenderAccount {
                         "Error sending ReconcileAllocations message"
                     );
                     break;
+                }
+
+                // Run RAV reorg reconciliation every 10 ticks (~5 minutes if interval is 30s)
+                // This checks for chain reorganizations that may have reverted RAV redemptions
+                if tick_count.is_multiple_of(10) {
+                    tracing::debug!(
+                        sender = %sender_for_log,
+                        "Running periodic RAV reorg reconciliation"
+                    );
+                    if let Err(e) = myself_reconcile.cast(SenderAccountMessage::ReconcileRavReorgs)
+                    {
+                        tracing::error!(
+                            error = ?e,
+                            sender = %sender_for_log,
+                            "Error sending ReconcileRavReorgs message"
+                        );
+                        break;
+                    }
                 }
             }
         });
@@ -1583,6 +1938,17 @@ impl Actor for SenderAccount {
                 myself.cast(SenderAccountMessage::UpdateAllocationIds(
                     current_allocations,
                 ))?;
+            }
+            SenderAccountMessage::ReconcileRavReorgs => {
+                // Detect and recover from RAV state mismatches caused by chain reorgs.
+                // Compares locally-marked-redeemed RAVs against escrow subgraph state.
+                if let Err(e) = state.reconcile_rav_reorgs().await {
+                    tracing::error!(
+                        error = %e,
+                        sender = %state.sender,
+                        "Failed to reconcile RAV reorgs"
+                    );
+                }
             }
             #[cfg(test)]
             SenderAccountMessage::GetSenderFeeTracker(reply) => {
