@@ -2233,7 +2233,7 @@ pub mod tests {
             hex::ToHexExt,
             primitives::{Address, U256},
         },
-        AllocationId as AllocationIdCore,
+        AllocationId as AllocationIdCore, CollectionId,
     };
     use tokio::sync::mpsc;
     use wiremock::{
@@ -2255,7 +2255,8 @@ pub mod tests {
         assert_not_triggered, assert_triggered,
         test::{
             actors::{create_mock_sender_allocation, MockSenderAllocation},
-            create_rav, create_sender_account, store_rav_with_options, ESCROW_VALUE, TRIGGER_VALUE,
+            create_rav, create_rav_v2, create_sender_account, store_rav_v2_with_options,
+            store_rav_with_options, ESCROW_VALUE, TRIGGER_VALUE,
         },
     };
 
@@ -2677,8 +2678,9 @@ pub mod tests {
         .expect("Should not fail to insert into denylist");
 
         // make sure there's a reason to keep denied
-        let signed_rav = create_rav(ALLOCATION_ID_0, SIGNER.0.clone(), 4, ESCROW_VALUE);
-        store_rav_with_options()
+        let collection_id = *CollectionId::from(ALLOCATION_ID_0);
+        let signed_rav = create_rav_v2(collection_id, SIGNER.0.clone(), 4, ESCROW_VALUE);
+        store_rav_v2_with_options()
             .pgpool(&pgpool)
             .signed_rav(signed_rav)
             .sender(SENDER.1)
