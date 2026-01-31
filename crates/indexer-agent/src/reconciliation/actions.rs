@@ -7,6 +7,7 @@ use sqlx::PgPool;
 use tracing::{debug, info};
 
 use crate::{
+    metrics,
     models::{Action, ActionError, ActionInput, ActionType},
     rules::AllocationDecision,
 };
@@ -82,6 +83,7 @@ pub async fn queue_allocation_action(
             cooldown_secs = cooldown_secs,
             "Action recently executed for deployment, cooldown not expired"
         );
+        metrics::record_action_cooldown_skip("allocate");
         return Ok(None);
     }
 
@@ -135,6 +137,7 @@ pub async fn queue_allocation_action(
         amount = %allocation_amount,
         "Queued allocation action"
     );
+    metrics::record_action_queued("allocate");
 
     Ok(Some(action))
 }
@@ -174,6 +177,7 @@ pub async fn queue_unallocation_action(
             cooldown_secs = cooldown_secs,
             "Action recently executed for deployment, cooldown not expired"
         );
+        metrics::record_action_cooldown_skip("unallocate");
         return Ok(None);
     }
 
@@ -226,6 +230,7 @@ pub async fn queue_unallocation_action(
         action_id = action.id,
         "Queued unallocation action"
     );
+    metrics::record_action_queued("unallocate");
 
     Ok(Some(action))
 }
@@ -265,6 +270,7 @@ pub async fn queue_reallocation_action(
             cooldown_secs = cooldown_secs,
             "Action recently executed for deployment, cooldown not expired"
         );
+        metrics::record_action_cooldown_skip("reallocate");
         return Ok(None);
     }
 
@@ -317,6 +323,7 @@ pub async fn queue_reallocation_action(
         action_id = action.id,
         "Queued reallocation action"
     );
+    metrics::record_action_queued("reallocate");
 
     Ok(Some(action))
 }

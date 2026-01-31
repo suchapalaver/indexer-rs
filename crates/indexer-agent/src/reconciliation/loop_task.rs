@@ -6,7 +6,7 @@
 //! Runs as a background tokio task that periodically reconciles
 //! the indexer's allocation state with the desired state from rules.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sqlx::PgPool;
 use thegraph_core::alloy::primitives::Address;
@@ -18,6 +18,7 @@ use super::{
     deployments::reconcile_deployment_allocations,
 };
 use crate::{
+    metrics,
     models::Action,
     rules::{evaluate_deployments, NetworkDeployment},
 };
@@ -94,15 +95,25 @@ pub async fn run_reconciliation_loop(
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                if let Err(e) = run_reconciliation_cycle(
+                let start = Instant::now();
+                let result = run_reconciliation_cycle(
                     &pool,
                     indexer_address,
                     &config,
                     &deployments_rx,
                     &allocations_rx,
                     &epoch_rx,
-                ).await {
-                    error!(error = %e, "Reconciliation cycle failed");
+                ).await;
+                let duration_secs = start.elapsed().as_secs_f64();
+
+                match result {
+                    Ok(()) => {
+                        metrics::record_reconciliation_success(duration_secs);
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Reconciliation cycle failed");
+                        metrics::record_reconciliation_error(duration_secs);
+                    }
                 }
             }
             _ = shutdown_rx.changed() => {

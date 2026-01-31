@@ -13,6 +13,7 @@
 //! - Input validation for identifiers and parameters
 
 pub mod executor;
+pub mod metrics;
 pub mod models;
 pub mod reconciliation;
 pub mod rules;

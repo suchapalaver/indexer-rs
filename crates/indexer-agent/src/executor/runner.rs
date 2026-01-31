@@ -3,7 +3,10 @@
 
 //! Main action executor for processing approved allocation actions.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use alloy::{
     network::TransactionBuilder,
@@ -24,7 +27,10 @@ use super::{
     provider::{ExecutorProvider, ProviderCache},
     transactions::{build_allocate_tx, build_unallocate_tx, parse_amount, GAS_BUFFER_PERCENT},
 };
-use crate::models::{Action, ActionStatus, ActionType};
+use crate::{
+    metrics,
+    models::{Action, ActionStatus, ActionType},
+};
 
 /// Maximum number of retries for receipt polling.
 const RECEIPT_MAX_RETRIES: u32 = 3;
@@ -195,6 +201,7 @@ impl ActionExecutor {
 
         // Execute in order: unallocate -> reallocate -> allocate
         for action in unallocates.into_iter().chain(reallocates).chain(allocates) {
+            let action_type_str = action_type_to_str(&action.action_type);
             if let Err(e) = self.execute_action(&action).await {
                 error!(
                     action_id = action.id,
@@ -202,6 +209,9 @@ impl ActionExecutor {
                     error = %e,
                     "Failed to execute action"
                 );
+
+                // Record transaction failure metric
+                metrics::record_transaction_failed(action_type_str);
 
                 // Mark action as failed
                 let _ = Action::update_status(
@@ -275,10 +285,17 @@ impl ActionExecutor {
             .get_receipt_with_retry(&provider, tx_hash.clone())
             .await?;
 
+        let action_type_str = action_type_to_str(&action.action_type);
+        let gas_used = receipt.gas_used;
+
         // Check if transaction succeeded
         if !receipt.status() {
+            metrics::record_transaction_reverted(action_type_str, gas_used);
             return Err(ExecutorError::TransactionReverted { tx_hash });
         }
+
+        // Record successful transaction
+        metrics::record_transaction_success(action_type_str, gas_used);
 
         // Mark action as success
         Action::update_status(
@@ -294,6 +311,7 @@ impl ActionExecutor {
         info!(
             action_id = action.id,
             tx_hash = %tx_hash,
+            gas_used = gas_used,
             "Action executed successfully"
         );
 
@@ -485,15 +503,18 @@ impl ActionExecutor {
     ) -> Result<(), ExecutorError> {
         let Some(max_gwei) = self.config.max_gas_price_gwei else {
             // No threshold configured, proceed immediately
+            metrics::record_gas_price_immediate();
             return Ok(());
         };
 
         let timeout_secs = self.config.gas_price_wait_timeout_secs;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+        let start = Instant::now();
 
         // Convert threshold to wei (1 gwei = 10^9 wei)
         let max_wei: u128 = (max_gwei as u128) * 1_000_000_000;
 
+        let mut first_check = true;
         loop {
             let current_gas_price = provider
                 .get_gas_price()
@@ -509,16 +530,27 @@ impl ActionExecutor {
                     max_gwei = max_gwei,
                     "Gas price acceptable"
                 );
+
+                if first_check {
+                    // Gas was acceptable on first check
+                    metrics::record_gas_price_immediate();
+                } else {
+                    // Had to wait for gas price to drop
+                    let wait_secs = start.elapsed().as_secs_f64();
+                    metrics::record_gas_price_waited(wait_secs);
+                }
                 return Ok(());
             }
 
             if tokio::time::Instant::now() >= deadline {
+                let wait_secs = start.elapsed().as_secs_f64();
                 warn!(
                     current_gwei = current_gwei,
                     max_gwei = max_gwei,
                     waited_secs = timeout_secs,
                     "Gas price threshold timeout"
                 );
+                metrics::record_gas_price_timeout(wait_secs);
                 return Err(ExecutorError::GasPriceThresholdTimeout {
                     current_gwei,
                     max_gwei,
@@ -526,6 +558,7 @@ impl ActionExecutor {
                 });
             }
 
+            first_check = false;
             info!(
                 current_gwei = current_gwei,
                 max_gwei = max_gwei,
@@ -845,6 +878,15 @@ impl ActionExecutor {
         );
 
         Ok(())
+    }
+}
+
+/// Convert an ActionType to a string for metrics labels.
+fn action_type_to_str(action_type: &ActionType) -> &'static str {
+    match action_type {
+        ActionType::Allocate => "allocate",
+        ActionType::Unallocate => "unallocate",
+        ActionType::Reallocate => "reallocate",
     }
 }
 
