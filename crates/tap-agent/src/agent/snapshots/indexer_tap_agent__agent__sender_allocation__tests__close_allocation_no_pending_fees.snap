@@ -4,8 +4,8 @@ expression: message_receiver.recv().await
 ---
 Some(
     UpdateReceiptFees(
-        Legacy(
-            0xfa44c72b753a66591f241c7dc04e8178c30e13af,
+        Horizon(
+            0x000000000000000000000000fa44c72b753a66591f241c7dc04e8178c30e13af,
         ),
         UpdateValue(
             UnaggregatedReceipts {
