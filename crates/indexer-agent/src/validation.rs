@@ -7,7 +7,10 @@
 //! used in the indexer agent, including deployment IDs, protocol networks,
 //! and allocation amounts.
 
+use std::str::FromStr;
+
 use alloy::primitives::U256;
+use bigdecimal::{num_bigint::ToBigInt, BigDecimal, Signed};
 use thegraph_core::DeploymentId;
 use thiserror::Error;
 
@@ -129,10 +132,9 @@ pub fn validate_protocol_network(network: &str) -> Result<(), ValidationError> {
 
 /// Validate an allocation amount.
 ///
-/// Accepts:
-/// - Decimal string (e.g., "1000000000000000000")
-/// - Float string (e.g., "1.5e18", "1000.0")
-/// - Hex string (e.g., "0xde0b6b3a7640000")
+/// Units policy (unambiguous):
+/// - Integer strings are interpreted as wei (base-10) unless prefixed with 0x (hex wei)
+/// - Decimal or scientific-notation strings are interpreted as GRT and converted to wei
 ///
 /// The amount must be non-zero and representable as U256.
 ///
@@ -169,29 +171,34 @@ pub fn validate_allocation_amount(amount: &str) -> Result<(), ValidationError> {
         ));
     }
 
-    // Try parsing as hex
+    // Check hex prefix first (before decimal/scientific check, since hex can contain 'e')
     let value = if let Some(hex) = amount.strip_prefix("0x") {
         U256::from_str_radix(hex, 16)
             .map_err(|e| ValidationError::InvalidAmount(amount.to_string(), e.to_string()))?
     } else if amount.contains('.') || amount.contains('e') || amount.contains('E') {
-        // Try parsing as float and convert to integer
-        let float_val: f64 = amount.parse().map_err(|e: std::num::ParseFloatError| {
-            ValidationError::InvalidAmount(amount.to_string(), e.to_string())
-        })?;
+        let grt = BigDecimal::from_str(amount)
+            .map_err(|e| ValidationError::InvalidAmount(amount.to_string(), e.to_string()))?;
 
-        if float_val < 0.0 {
+        if grt.is_negative() {
             return Err(ValidationError::InvalidAmount(
                 amount.to_string(),
                 "amount cannot be negative".to_string(),
             ));
         }
 
-        // Convert to integer (truncate decimal part)
-        U256::from(float_val as u128)
+        let scale = BigDecimal::from_str("1000000000000000000").expect("valid scale");
+        let wei = grt * scale;
+        let wei_int = wei.to_bigint().ok_or_else(|| {
+            ValidationError::InvalidAmount(
+                amount.to_string(),
+                "amount has fractional wei".to_string(),
+            )
+        })?;
+
+        U256::from_str_radix(&wei_int.to_string(), 10)
+            .map_err(|e| ValidationError::InvalidAmount(amount.to_string(), e.to_string()))?
     } else {
-        // Try parsing as decimal integer
-        amount
-            .parse::<U256>()
+        U256::from_str_radix(amount, 10)
             .map_err(|e| ValidationError::InvalidAmount(amount.to_string(), e.to_string()))?
     };
 
@@ -307,6 +314,7 @@ mod tests {
         // Decimal string
         assert!(validate_allocation_amount("1000000000000000000").is_ok());
         assert!(validate_allocation_amount("1").is_ok());
+        assert!(validate_allocation_amount("100000000000000000000000000000000000000").is_ok());
 
         // Hex string
         assert!(validate_allocation_amount("0xde0b6b3a7640000").is_ok());

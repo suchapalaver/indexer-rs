@@ -8,11 +8,14 @@
 //! - Closing allocations (collect + stopService)
 //! - Reallocating (close existing + open new)
 
+use std::str::FromStr;
+
 use alloy::{
     primitives::{Address, Bytes, FixedBytes, U256},
     sol,
     sol_types::{SolCall, SolValue},
 };
+use bigdecimal::{num_bigint::ToBigInt, BigDecimal, Signed};
 
 use super::{
     contracts::{PaymentType, SubgraphService},
@@ -268,36 +271,74 @@ pub fn build_reallocate_tx(params: ReallocateParams) -> (Bytes, Bytes) {
 
 /// Parse an amount string to U256 wei value.
 ///
-/// The amount can be specified in GRT (with optional decimals) or as raw wei.
+/// Units policy (unambiguous):
+/// - Integer strings are interpreted as wei (base-10) unless prefixed with 0x (hex wei)
+/// - Decimal or scientific-notation strings are interpreted as GRT and converted to wei
 ///
 /// # Arguments
-/// * `amount` - The amount string (e.g., "100", "100.5", or raw wei)
+/// * `amount` - The amount string (e.g., "1000000000000000000", "0xde0b6b3a7640000", "1.5")
 ///
 /// # Returns
 /// The amount in wei as U256
 pub fn parse_amount(amount: &str) -> Result<U256, ExecutorError> {
-    // Try parsing as a decimal GRT amount first
-    if let Ok(parsed) = amount.parse::<f64>() {
-        // Convert GRT to wei (1 GRT = 10^18 wei)
-        let wei = parsed * 1e18;
-        if !(0.0..=f64::MAX).contains(&wei) {
-            return Err(ExecutorError::InvalidAmount {
-                action_id: 0, // Will be set by caller
-                amount: amount.to_string(),
-                reason: "amount out of range".to_string(),
-            });
-        }
-        return Ok(U256::from(wei as u128));
-    }
-
-    // Try parsing as raw wei (for large values)
-    U256::from_str_radix(amount.trim_start_matches("0x"), 10)
-        .or_else(|_| U256::from_str_radix(amount.trim_start_matches("0x"), 16))
-        .map_err(|e| ExecutorError::InvalidAmount {
+    let amount = amount.trim();
+    if amount.is_empty() {
+        return Err(ExecutorError::InvalidAmount {
             action_id: 0,
             amount: amount.to_string(),
-            reason: format!("failed to parse: {e}"),
-        })
+            reason: "amount cannot be empty".to_string(),
+        });
+    }
+
+    // GRT decimals (or scientific notation) -> convert to wei using BigDecimal
+    if amount.contains('.') || amount.contains('e') || amount.contains('E') {
+        let grt = BigDecimal::from_str(amount).map_err(|e| ExecutorError::InvalidAmount {
+            action_id: 0,
+            amount: amount.to_string(),
+            reason: format!("invalid decimal amount: {e}"),
+        })?;
+
+        if grt.is_negative() {
+            return Err(ExecutorError::InvalidAmount {
+                action_id: 0,
+                amount: amount.to_string(),
+                reason: "amount cannot be negative".to_string(),
+            });
+        }
+
+        let scale = BigDecimal::from_str("1000000000000000000").expect("valid scale");
+        let wei = grt * scale;
+        let wei_int = wei
+            .to_bigint()
+            .ok_or_else(|| ExecutorError::InvalidAmount {
+                action_id: 0,
+                amount: amount.to_string(),
+                reason: "amount has fractional wei".to_string(),
+            })?;
+
+        return U256::from_str_radix(&wei_int.to_string(), 10).map_err(|e| {
+            ExecutorError::InvalidAmount {
+                action_id: 0,
+                amount: amount.to_string(),
+                reason: format!("amount out of range: {e}"),
+            }
+        });
+    }
+
+    // Integer -> wei (decimal or hex)
+    if let Some(hex) = amount.strip_prefix("0x") {
+        return U256::from_str_radix(hex, 16).map_err(|e| ExecutorError::InvalidAmount {
+            action_id: 0,
+            amount: amount.to_string(),
+            reason: format!("failed to parse hex wei: {e}"),
+        });
+    }
+
+    U256::from_str_radix(amount, 10).map_err(|e| ExecutorError::InvalidAmount {
+        action_id: 0,
+        amount: amount.to_string(),
+        reason: format!("failed to parse wei: {e}"),
+    })
 }
 
 #[cfg(test)]
@@ -306,8 +347,8 @@ mod tests {
 
     #[test]
     fn test_parse_amount_grt() {
-        // 100 GRT = 100 * 10^18 wei
-        let amount = parse_amount("100").unwrap();
+        // 100 GRT = 100 * 10^18 wei (use decimal to indicate GRT)
+        let amount = parse_amount("100.0").unwrap();
         assert_eq!(amount, U256::from(100_000_000_000_000_000_000u128));
     }
 
@@ -316,6 +357,22 @@ mod tests {
         // 100.5 GRT
         let amount = parse_amount("100.5").unwrap();
         assert_eq!(amount, U256::from(100_500_000_000_000_000_000u128));
+    }
+
+    #[test]
+    fn test_parse_amount_wei_integer() {
+        // Treat integer as wei
+        let amount = parse_amount("1000000000000000000").unwrap();
+        assert_eq!(amount, U256::from(1_000_000_000_000_000_000u128));
+    }
+
+    #[test]
+    fn test_parse_amount_large_wei() {
+        // Large wei value beyond u128
+        let amount_str = "100000000000000000000000000000000000000";
+        let amount = parse_amount(amount_str).unwrap();
+        let expected = U256::from_str_radix(amount_str, 10).unwrap();
+        assert_eq!(amount, expected);
     }
 
     #[test]
