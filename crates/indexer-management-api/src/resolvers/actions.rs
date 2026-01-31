@@ -3,8 +3,9 @@
 
 use async_graphql::{Context, InputObject, Object, SimpleObject};
 use indexer_agent::{
-    Action as AgentAction, ActionFilter as AgentActionFilter, ActionInput as AgentActionInput,
-    ActionStatus as AgentActionStatus, ActionType as AgentActionType,
+    validate_action_input, Action as AgentAction, ActionFilter as AgentActionFilter,
+    ActionInput as AgentActionInput, ActionStatus as AgentActionStatus,
+    ActionType as AgentActionType,
 };
 use sqlx::PgPool;
 
@@ -14,6 +15,17 @@ pub enum ActionType {
     Allocate,
     Unallocate,
     Reallocate,
+}
+
+impl ActionType {
+    /// Returns the action type as a lowercase string for validation.
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Allocate => "allocate",
+            Self::Unallocate => "unallocate",
+            Self::Reallocate => "reallocate",
+        }
+    }
 }
 
 impl From<AgentActionType> for ActionType {
@@ -219,6 +231,12 @@ pub struct ActionMutation;
 #[Object]
 impl ActionMutation {
     /// Queue new actions
+    ///
+    /// Validates all action inputs before queueing. Validation includes:
+    /// - Deployment ID format (IPFS CIDv0 or bytes32 hex)
+    /// - Protocol network format (CAIP-2)
+    /// - Action type-specific required fields
+    /// - Field format validation (allocation_id, amount)
     async fn queue_actions(
         &self,
         ctx: &Context<'_>,
@@ -228,6 +246,18 @@ impl ActionMutation {
         let mut results = Vec::with_capacity(actions.len());
 
         for action in actions {
+            // Validate action input at API boundary (MP-5)
+            validate_action_input(
+                action.action_type.as_str(),
+                &action.deployment_id,
+                &action.protocol_network,
+                action.allocation_id.as_deref(),
+                action.amount.as_deref(),
+                // is_legacy is always Some(false) after conversion, but we validate with None
+                // since the API doesn't expose this field
+                None,
+            )?;
+
             let result = AgentAction::queue(pool, action.into()).await?;
             results.push(result.into());
         }

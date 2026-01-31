@@ -39,6 +39,7 @@ pub use rules::{
     MergedIndexingRule, NetworkDeployment, PreprocessedRules,
 };
 pub use validation::{
-    validate_allocation_amount, validate_allocation_lifetime, validate_deployment_id,
-    validate_not_legacy, validate_protocol_network, ValidationError,
+    validate_action_input, validate_allocation_amount, validate_allocation_id,
+    validate_allocation_lifetime, validate_deployment_id, validate_not_legacy,
+    validate_protocol_network, ValidationError,
 };
