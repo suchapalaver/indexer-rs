@@ -12,6 +12,7 @@
 //! - Business logic for allocation management
 //! - Input validation for identifiers and parameters
 
+pub mod error;
 pub mod executor;
 pub mod metrics;
 pub mod models;
@@ -20,6 +21,7 @@ pub mod reconciliation;
 pub mod rules;
 pub mod validation;
 
+pub use error::{ErrorClass, ErrorClassification};
 pub use executor::{
     is_nonce_error, ActionExecutor, ExecutorConfig, ExecutorError, HorizonStakingContract,
     ProviderCache, SubgraphServiceContract,

@@ -21,6 +21,8 @@ use thegraph_core::DeploymentId;
 use tracing::{debug, warn};
 use url::Url;
 
+use crate::error::{ErrorClass, ErrorClassification};
+
 /// Result of a POI resolution request.
 #[derive(Debug, Clone)]
 pub struct PoiResult {
@@ -63,6 +65,12 @@ pub enum PoiError {
         block_number: u64,
         latest_block: u64,
     },
+}
+
+impl ErrorClassification for PoiError {
+    fn class(&self) -> ErrorClass {
+        ErrorClass::External
+    }
 }
 
 /// GraphQL request for publicProofsOfIndexing

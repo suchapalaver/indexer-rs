@@ -14,6 +14,8 @@ use bigdecimal::{num_bigint::ToBigInt, BigDecimal, Signed};
 use thegraph_core::DeploymentId;
 use thiserror::Error;
 
+use crate::error::{ErrorClass, ErrorClassification};
+
 /// Errors that can occur during input validation.
 #[derive(Debug, Error)]
 pub enum ValidationError {
@@ -51,6 +53,12 @@ pub enum ValidationError {
     /// Invalid allocation ID format.
     #[error("invalid allocation ID '{0}': expected 0x-prefixed 40-character hex address")]
     InvalidAllocationId(String),
+}
+
+impl ErrorClassification for ValidationError {
+    fn class(&self) -> ErrorClass {
+        ErrorClass::Input
+    }
 }
 
 /// Validate a deployment identifier.

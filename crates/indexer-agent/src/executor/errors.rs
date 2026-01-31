@@ -6,6 +6,8 @@
 use alloy::primitives::Address;
 use thiserror::Error;
 
+use crate::error::{ErrorClass, ErrorClassification};
+
 /// Errors that can occur during action execution.
 #[derive(Error, Debug)]
 pub enum ExecutorError {
@@ -139,6 +141,40 @@ pub enum ExecutorError {
     /// POI is required but was not provided
     #[error("POI is required for unallocate action {action_id}. Either resolve POI or set force=true to close without POI")]
     PoiRequired { action_id: i32 },
+}
+
+impl ErrorClassification for ExecutorError {
+    fn class(&self) -> ErrorClass {
+        match self {
+            ExecutorError::MissingField { .. }
+            | ExecutorError::InvalidAmount { .. }
+            | ExecutorError::ActionNotApproved { .. }
+            | ExecutorError::PoiRequired { .. } => ErrorClass::Input,
+            ExecutorError::ActionNotFound { .. }
+            | ExecutorError::AllocationNotFound { .. }
+            | ExecutorError::AllocationNotActive { .. }
+            | ExecutorError::AllocationIndexerMismatch { .. }
+            | ExecutorError::AllocationDeploymentMismatch { .. }
+            | ExecutorError::AllocationProof(_)
+            | ExecutorError::AllocationIdExhausted { .. }
+            | ExecutorError::PoiResolutionFailed { .. }
+            | ExecutorError::GasPriceThresholdTimeout { .. }
+            | ExecutorError::TransactionReverted { .. }
+            | ExecutorError::TransactionNotFound { .. }
+            | ExecutorError::TransactionPending { .. } => ErrorClass::Invariant,
+            ExecutorError::UnauthorizedOperator { .. }
+            | ExecutorError::NetworkPaused
+            | ExecutorError::Provider(_)
+            | ExecutorError::TransactionBuild(_)
+            | ExecutorError::TransactionSubmit(_)
+            | ExecutorError::GasEstimation(_)
+            | ExecutorError::InsufficientGasBalance { .. }
+            | ExecutorError::ContractCall(_)
+            | ExecutorError::Database(_)
+            | ExecutorError::Signing(_)
+            | ExecutorError::Config(_) => ErrorClass::External,
+        }
+    }
 }
 
 /// Patterns that indicate a nonce-related error.

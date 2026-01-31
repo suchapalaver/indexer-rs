@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool, Type};
 use thiserror::Error;
 
+use crate::error::{ErrorClass, ErrorClassification};
+
 /// Errors that can occur when working with actions.
 #[derive(Debug, Error)]
 pub enum ActionError {
@@ -25,6 +27,16 @@ pub enum ActionError {
     /// Database error.
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
+}
+
+impl ErrorClassification for ActionError {
+    fn class(&self) -> ErrorClass {
+        match self {
+            ActionError::DuplicatePendingAction { .. } => ErrorClass::Invariant,
+            ActionError::LegacyActionNotSupported => ErrorClass::Input,
+            ActionError::Database(_) => ErrorClass::External,
+        }
+    }
 }
 
 /// Type of allocation action
