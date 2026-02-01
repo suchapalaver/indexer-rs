@@ -245,11 +245,12 @@ mod test {
     }
 
     async fn horizon_adapter_with_testcontainers() -> TestContextWithContainer<Horizon> {
+        use thegraph_core::alloy::primitives::Address;
         let test_db = test_assets::setup_shared_test_db().await;
         let context = TapAgentContext::builder()
             .pgpool(test_db.pool.clone())
             .escrow_accounts(watch::channel(EscrowAccounts::default()).1)
-            .subgraph_service_address(test_assets::TAP_SENDER.1) // Use a dummy address for tests
+            .subgraph_service_address(Address::ZERO) // Must match dataService in created RAVs
             .build();
         TestContextWithContainer {
             context,

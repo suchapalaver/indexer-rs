@@ -322,7 +322,7 @@ mod test {
         TapAgentContext::builder()
             .pgpool(pgpool)
             .escrow_accounts(escrow_accounts)
-            .subgraph_service_address(test_assets::TAP_SENDER.1) // Use a dummy address for tests
+            .subgraph_service_address(Address::ZERO) // Must match data_service in created receipts
             .build()
     }
 
