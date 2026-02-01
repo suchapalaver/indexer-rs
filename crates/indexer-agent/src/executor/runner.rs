@@ -1232,4 +1232,39 @@ mod tests {
             "Recovered signer should equal allocation ID"
         );
     }
+
+    #[tokio::test]
+    async fn test_allocation_proof_signature_bytes() {
+        use alloy::{
+            primitives::address,
+            signers::local::{coins_bip39::English, MnemonicBuilder, PrivateKeySigner},
+            sol_types::SolStruct,
+        };
+        use thegraph_core::alloy::hex::ToHexExt;
+
+        // Deterministic test vector: derived from a public test mnemonic.
+        let allocation_wallet: PrivateKeySigner = MnemonicBuilder::<English>::default()
+            .phrase(
+                "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            )
+            .index(0u32)
+            .unwrap()
+            .build()
+            .unwrap();
+        let allocation_id = allocation_wallet.address();
+        let indexer = address!("1234567890123456789012345678901234567890");
+        let subgraph_service = address!("94dc3B65AF05a7A8d36B877eb5DE68B6B16B6389");
+        let domain = subgraph_service_eip712_domain(42161, subgraph_service);
+
+        let proof_data = AllocationIdProof {
+            indexer,
+            allocationId: allocation_id,
+        };
+        let signing_hash = proof_data.eip712_signing_hash(&domain);
+        let signature = allocation_wallet.sign_hash(&signing_hash).await.unwrap();
+        let signature_hex = signature.as_bytes().encode_hex();
+
+        let expected = "61460d93990b5f8d08d8e82ac995be9f46e4433c3b8764e14d3d2a8565d85a0b6340a054d41c66b1ab272db68e3802fe687b6e2ef52f70fa5b3a6f855255a7a11c";
+        assert_eq!(signature_hex, expected);
+    }
 }
