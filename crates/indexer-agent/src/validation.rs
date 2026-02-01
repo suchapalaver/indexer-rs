@@ -15,6 +15,20 @@ use crate::{
     error::{ErrorClass, ErrorClassification},
 };
 
+const MAX_INPUT_DISPLAY_LEN: usize = 100;
+
+fn redact_input(input: &str) -> String {
+    let trimmed = input.trim();
+    let mut output = String::with_capacity(trimmed.len().min(MAX_INPUT_DISPLAY_LEN));
+    for c in trimmed.chars().take(MAX_INPUT_DISPLAY_LEN) {
+        output.push(c);
+    }
+    if trimmed.chars().count() > MAX_INPUT_DISPLAY_LEN {
+        output.push('…');
+    }
+    output
+}
+
 /// Errors that can occur during input validation.
 #[derive(Debug, Error)]
 pub enum ValidationError {
@@ -97,7 +111,7 @@ impl ErrorClassification for ValidationError {
 pub fn validate_deployment_id(id: &str) -> Result<(), ValidationError> {
     id.parse::<DeploymentId>()
         .map(|_| ())
-        .map_err(|_| ValidationError::InvalidDeploymentId(id.to_string()))
+        .map_err(|_| ValidationError::InvalidDeploymentId(redact_input(id)))
 }
 
 /// Validate a protocol network identifier.
@@ -131,7 +145,9 @@ pub fn validate_protocol_network(network: &str) -> Result<(), ValidationError> {
     let parts: Vec<&str> = network.split(':').collect();
 
     if parts.len() != 2 {
-        return Err(ValidationError::InvalidProtocolNetwork(network.to_string()));
+        return Err(ValidationError::InvalidProtocolNetwork(redact_input(
+            network,
+        )));
     }
 
     let namespace = parts[0];
@@ -144,7 +160,9 @@ pub fn validate_protocol_network(network: &str) -> Result<(), ValidationError> {
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
     {
-        return Err(ValidationError::InvalidProtocolNetwork(network.to_string()));
+        return Err(ValidationError::InvalidProtocolNetwork(redact_input(
+            network,
+        )));
     }
 
     // Validate reference (1-32 alphanumeric + dash)
@@ -154,7 +172,9 @@ pub fn validate_protocol_network(network: &str) -> Result<(), ValidationError> {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-')
     {
-        return Err(ValidationError::InvalidProtocolNetwork(network.to_string()));
+        return Err(ValidationError::InvalidProtocolNetwork(redact_input(
+            network,
+        )));
     }
 
     Ok(())
@@ -196,13 +216,13 @@ pub fn validate_allocation_amount(amount: &str) -> Result<(), ValidationError> {
     // Empty string is invalid
     if amount.is_empty() {
         return Err(ValidationError::InvalidAmount(
-            amount.to_string(),
+            redact_input(amount),
             "amount cannot be empty".to_string(),
         ));
     }
 
     let value = parse_amount_wei(amount)
-        .map_err(|e| ValidationError::InvalidAmount(amount.to_string(), e.reason))?;
+        .map_err(|e| ValidationError::InvalidAmount(redact_input(amount), e.reason))?;
 
     if value.is_zero() {
         return Err(ValidationError::ZeroAmount);
@@ -283,20 +303,20 @@ pub fn validate_allocation_id(allocation_id: &str) -> Result<(), ValidationError
     let hex = allocation_id
         .strip_prefix("0x")
         .or_else(|| allocation_id.strip_prefix("0X"))
-        .ok_or_else(|| ValidationError::InvalidAllocationId(allocation_id.to_string()))?;
+        .ok_or_else(|| ValidationError::InvalidAllocationId(redact_input(allocation_id)))?;
 
     // Must be exactly 40 hex characters (20 bytes)
     if hex.len() != 40 {
-        return Err(ValidationError::InvalidAllocationId(
-            allocation_id.to_string(),
-        ));
+        return Err(ValidationError::InvalidAllocationId(redact_input(
+            allocation_id,
+        )));
     }
 
     // Must be valid hex
     if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(ValidationError::InvalidAllocationId(
-            allocation_id.to_string(),
-        ));
+        return Err(ValidationError::InvalidAllocationId(redact_input(
+            allocation_id,
+        )));
     }
 
     Ok(())
@@ -432,10 +452,10 @@ pub fn validate_poi_fields(
 fn validate_poi_hash(poi: &str) -> Result<(), ValidationError> {
     let poi = poi.trim();
     if !poi.starts_with("0x") || poi.len() != 66 {
-        return Err(ValidationError::InvalidPoi(poi.to_string()));
+        return Err(ValidationError::InvalidPoi(redact_input(poi)));
     }
     if !poi[2..].chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(ValidationError::InvalidPoi(poi.to_string()));
+        return Err(ValidationError::InvalidPoi(redact_input(poi)));
     }
     Ok(())
 }
