@@ -445,7 +445,9 @@ impl ActionExecutor {
             .isOverAllocated(self.config.indexer_address)
             .call()
             .await
-            .unwrap_or(false);
+            .map_err(|e| {
+                ExecutorError::ContractCall(format!("Failed to check over-allocation status: {e}"))
+            })?;
 
         // Build transaction
         let calldata = build_unallocate_tx(

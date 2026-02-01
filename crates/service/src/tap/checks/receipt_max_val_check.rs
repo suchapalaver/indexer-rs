@@ -28,7 +28,7 @@ impl Check<TapReceipt> for ReceiptMaxValueCheck {
     ) -> CheckResult {
         let receipt_value = receipt.signed_receipt().value();
 
-        if receipt_value < self.receipt_max_value {
+        if receipt_value <= self.receipt_max_value {
             Ok(())
         } else {
             Err(CheckError::Failed(anyhow!(
@@ -112,7 +112,7 @@ mod tests {
         assert!(timestamp_check
             .check(&Context::new(), &signed_receipt)
             .await
-            .is_err());
+            .is_ok());
     }
 
     #[tokio::test]
