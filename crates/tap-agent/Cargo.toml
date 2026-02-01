@@ -4,10 +4,6 @@ version = "1.12.4"
 edition = "2021"
 publish = false
 
-[[bin]]
-name = "indexer-tap-agent"
-path = "src/main.rs"
-
 [features]
 default = []
 test = ["dep:test-assets", "dep:rand"]

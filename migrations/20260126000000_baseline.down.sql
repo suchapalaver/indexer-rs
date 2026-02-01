@@ -45,19 +45,3 @@ DROP TYPE IF EXISTS action_status;
 DROP TYPE IF EXISTS action_type;
 DROP TYPE IF EXISTS identifier_type;
 DROP TYPE IF EXISTS indexing_decision_basis;
-
---------------------------------------------------------------------------------
--- SECTION 5: Drop Legacy (V1) TAP Tables
---------------------------------------------------------------------------------
-
-DROP TRIGGER IF EXISTS deny_update ON scalar_tap_denylist;
-DROP FUNCTION IF EXISTS scalar_tap_deny_notify();
-DROP TABLE IF EXISTS scalar_tap_denylist CASCADE;
-
-DROP TABLE IF EXISTS scalar_tap_rav_requests_failed CASCADE;
-DROP TABLE IF EXISTS scalar_tap_ravs CASCADE;
-
-DROP TRIGGER IF EXISTS receipt_update ON scalar_tap_receipts;
-DROP FUNCTION IF EXISTS scalar_tap_receipt_notify();
-DROP TABLE IF EXISTS scalar_tap_receipts_invalid CASCADE;
-DROP TABLE IF EXISTS scalar_tap_receipts CASCADE;

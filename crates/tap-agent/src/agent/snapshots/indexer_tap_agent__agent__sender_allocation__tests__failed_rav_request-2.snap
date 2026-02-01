@@ -3,19 +3,14 @@ source: crates/tap-agent/src/agent/sender_allocation.rs
 expression: rav_error_response_message
 ---
 UpdateReceiptFees(
-    Horizon(
+    AllocationId(
         0x000000000000000000000000fa44c72b753a66591f241c7dc04e8178c30e13af,
     ),
-    RavRequestResponse(
+    UpdateValue(
         UnaggregatedReceipts {
             value: 45,
             last_id: 10,
             counter: 10,
         },
-        Err(
-            Other(
-                "It looks like there are no valid receipts for the RAV request from table: tap_horizon_receipts (V2/Horizon).This may happen if your `rav_request_trigger_value` is too low and no receipts were found outside the `rav_request_timestamp_buffer_ms`.You can fix this by increasing the `rav_request_trigger_value`.\nDuring Horizon migration: Verify receipts are in the correct table for this allocation type.",
-            ),
-        ),
     ),
 )

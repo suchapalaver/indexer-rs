@@ -17,15 +17,6 @@ The `20260126000000_baseline` migration consolidates all tables:
 3. **TAP Horizon (V2)** - `tap_horizon_receipts`, `tap_horizon_ravs`, `tap_horizon_denylist`
 4. **DIPS** - `indexing_agreements` for distributed indexing payment system
 
-### Legacy (V1) TAP Tables
-
-The baseline migration **preserves** Legacy V1 TAP tables for backwards compatibility:
-- `scalar_tap_receipts` / `scalar_tap_receipts_invalid`
-- `scalar_tap_ravs` / `scalar_tap_rav_requests_failed`
-- `scalar_tap_denylist`
-
-These tables will be removed in a future migration once V1 code is fully deprecated.
-
 ## Operator Migration Guide
 
 ### Fresh Installation
@@ -41,23 +32,12 @@ No special steps needed. Start indexer-service-rs and migrations run automatical
    pg_dump -h localhost -U postgres indexer_db > backup.sql
    ```
 
-3. **Verify V1 receipts are processed**
-   ```sql
-   -- Check for unprocessed V1 receipts
-   SELECT COUNT(*) FROM scalar_tap_receipts;
-
-   -- Check for unredeemed V1 RAVs
-   SELECT COUNT(*) FROM scalar_tap_ravs WHERE final = false;
-   ```
-
-   If counts are non-zero, wait for TAP agent to process them before upgrading.
-
-4. **Start indexer-service-rs**
+3. **Start indexer-service-rs**
 
    The service will automatically:
    - Run the baseline migration
    - Create agent tables if they don't exist
-   - Preserve Legacy V1 tables (will be removed in a future release)
+   - Create Horizon TAP tables and notifications
 
 5. **Verify migration success**
    ```sql

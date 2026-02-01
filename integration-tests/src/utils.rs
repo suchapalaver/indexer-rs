@@ -49,7 +49,7 @@ pub fn create_tap_receipt(
     let eip712_domain_separator = tap_eip712_domain(
         chain_id,
         Address::from_str(verifier_contract)?,
-        tap_core::TapVersion::V1,
+        tap_core::TapVersion::V2,
     );
 
     // Create and sign receipt

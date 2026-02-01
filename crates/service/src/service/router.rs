@@ -17,9 +17,8 @@ use indexer_config::{
     ServiceConfig, ServiceTapConfig,
 };
 use indexer_monitor::{
-    attestation_signers, deployment_to_allocation, dispute_manager, escrow_accounts_v1,
-    escrow_accounts_v2, indexer_allocations, AllocationWatcher, DisputeManagerWatcher,
-    EscrowAccountsWatcher, SubgraphClient,
+    attestation_signers, deployment_to_allocation, dispute_manager, indexer_allocations,
+    AllocationWatcher, DisputeManagerWatcher, EscrowAccountsWatcher, SubgraphClient,
 };
 use reqwest::Method;
 use tap_core::{manager::Manager, receipt::checks::CheckList};
@@ -77,9 +76,8 @@ pub struct ServiceRouter {
         config: EscrowSubgraphConfig|
         (subgraph, config))]
     escrow_subgraph: Option<(&'static SubgraphClient, EscrowSubgraphConfig)>,
-    escrow_accounts_v1: Option<EscrowAccountsWatcher>,
 
-    escrow_accounts_v2: Option<EscrowAccountsWatcher>,
+    escrow_accounts_v2: EscrowAccountsWatcher,
 
     // provide network subgraph or allocations + dispute manager
     #[builder(with = |subgraph: &'static SubgraphClient,
@@ -147,44 +145,8 @@ impl ServiceRouter {
             (None, None) => panic!("No allocations or network subgraph was provided"),
         };
 
-        // Monitor escrow accounts v1
-        // if not provided, create monitor from subgraph
-        let escrow_accounts_v1 = match (self.escrow_accounts_v1, self.escrow_subgraph.as_ref()) {
-            (Some(escrow_account), _) => Some(escrow_account),
-            (_, Some((escrow_subgraph, escrow))) => Some(
-                escrow_accounts_v1(
-                    escrow_subgraph,
-                    indexer_address,
-                    escrow.config.syncing_interval_secs,
-                    true, // Reject thawing signers eagerly
-                )
-                .await
-                .expect("Error creating escrow_accounts_v1 channel"),
-            ),
-            (None, None) => None,
-        };
-
-        // Monitor escrow accounts v2
-        // if not provided, create monitor from subgraph
-        let escrow_accounts_v2 = match (self.escrow_accounts_v2, self.escrow_subgraph.as_ref()) {
-            (Some(escrow_account), _) => Some(escrow_account),
-            (_, Some((escrow_subgraph, escrow))) => Some(
-                escrow_accounts_v2(
-                    escrow_subgraph,
-                    indexer_address,
-                    escrow.config.syncing_interval_secs,
-                    true, // Reject thawing signers eagerly
-                )
-                .await
-                .expect("Error creating escrow_accounts_v2 channel"),
-            ),
-            (None, None) => None,
-        };
-
-        // Ensure at least one escrow accounts watcher is available
-        if escrow_accounts_v1.is_none() && escrow_accounts_v2.is_none() {
-            panic!("At least one escrow accounts watcher (v1 or v2) must be provided");
-        }
+        // Use provided escrow accounts v2 watcher
+        let escrow_accounts_v2 = self.escrow_accounts_v2;
 
         // Monitor dispute manager address
         // if not provided, create monitor from subgraph
@@ -294,7 +256,6 @@ impl ServiceRouter {
                 let checks = IndexerTapContext::get_checks(TapChecksConfig {
                     pgpool: self.database,
                     indexer_allocations: allocations.clone(),
-                    escrow_accounts_v1: escrow_accounts_v1.clone(),
                     escrow_accounts_v2: escrow_accounts_v2.clone(),
                     timestamp_error_tolerance,
                     receipt_max_value,

@@ -63,7 +63,6 @@ impl TapAgentHandle {
 /// * `pgpool` - Database connection pool (shared with service)
 /// * `network_subgraph` - Network subgraph client
 /// * `escrow_subgraph` - Escrow subgraph client
-/// * `escrow_accounts_v1` - V1 escrow accounts watcher
 /// * `escrow_accounts_v2` - V2 escrow accounts watcher
 /// * `domain_separator_v2` - EIP-712 domain separator for V2
 /// * `is_horizon_enabled` - Whether Horizon mode is active
@@ -73,7 +72,6 @@ pub async fn start_tap_agent(
     pgpool: PgPool,
     network_subgraph: &'static SubgraphClient,
     escrow_subgraph: &'static SubgraphClient,
-    escrow_accounts_v1: Receiver<EscrowAccounts>,
     escrow_accounts_v2: Receiver<EscrowAccounts>,
     domain_separator_v2: Eip712Domain,
     is_horizon_enabled: bool,
@@ -103,14 +101,13 @@ pub async fn start_tap_agent(
         network_subgraph,
         escrow_subgraph,
         indexer_allocations,
-        escrow_accounts_v1,
         escrow_accounts_v2,
         domain_separator_v2,
         config: sender_account_config,
         sender_aggregator_endpoints: config.tap.sender_aggregator_endpoints.clone(),
         is_horizon_enabled,
         prefix: None,
-        receipt_notification_rx: Some(notification_rx),
+        receipt_notification_rx: notification_rx,
     };
 
     // Initialize TAP agent metrics
@@ -128,30 +125,6 @@ pub async fn start_tap_agent(
     })
 }
 
-/// Create a receipt notification from V1 data.
-pub fn create_v1_notification(
-    id: u64,
-    allocation_id: Address,
-    signer_address: Address,
-    timestamp_ns: u64,
-    value: u128,
-) -> ChannelReceiptNotification {
-    use indexer_tap_agent::agent::sender_accounts_manager::{
-        NewReceiptNotification, NewReceiptNotificationV1, SenderType,
-    };
-
-    ChannelReceiptNotification {
-        notification: NewReceiptNotification::V1(NewReceiptNotificationV1 {
-            id,
-            allocation_id,
-            signer_address,
-            timestamp_ns,
-            value,
-        }),
-        sender_type: SenderType::Legacy,
-    }
-}
-
 /// Create a receipt notification from V2 data.
 pub fn create_v2_notification(
     id: u64,
@@ -160,18 +133,15 @@ pub fn create_v2_notification(
     timestamp_ns: u64,
     value: u128,
 ) -> ChannelReceiptNotification {
-    use indexer_tap_agent::agent::sender_accounts_manager::{
-        NewReceiptNotification, NewReceiptNotificationV2, SenderType,
-    };
+    use indexer_tap_agent::agent::sender_accounts_manager::NewReceiptNotification;
 
     ChannelReceiptNotification {
-        notification: NewReceiptNotification::V2(NewReceiptNotificationV2 {
+        notification: NewReceiptNotification {
             id,
             collection_id,
             signer_address,
             timestamp_ns,
             value,
-        }),
-        sender_type: SenderType::Horizon,
+        },
     }
 }

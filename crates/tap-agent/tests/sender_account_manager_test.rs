@@ -63,16 +63,17 @@ async fn sender_account_manager_layer_test() {
         ))
         .await;
 
-    let (prefix, mut msg_receiver, (actor, join_handle)) = create_sender_accounts_manager()
-        .pgpool(pgpool.clone())
-        .network_subgraph(&mock_network_subgraph_server.uri())
-        .escrow_subgraph(&mock_escrow_subgraph_server.uri())
-        .initial_escrow_accounts_v2(EscrowAccounts::new(
-            HashMap::from([(SENDER.1, U256::from(ESCROW_VALUE))]),
-            HashMap::from([(SENDER.1, vec![SIGNER.1])]),
-        ))
-        .call()
-        .await;
+    let (prefix, mut msg_receiver, (actor, join_handle), _notification_tx) =
+        create_sender_accounts_manager()
+            .pgpool(pgpool.clone())
+            .network_subgraph(&mock_network_subgraph_server.uri())
+            .escrow_subgraph(&mock_escrow_subgraph_server.uri())
+            .initial_escrow_accounts_v2(EscrowAccounts::new(
+                HashMap::from([(SENDER.1, U256::from(ESCROW_VALUE))]),
+                HashMap::from([(SENDER.1, vec![SIGNER.1])]),
+            ))
+            .call()
+            .await;
 
     actor
         .cast(SenderAccountsManagerMessage::UpdateSenderAccountsV2(
@@ -107,7 +108,7 @@ async fn sender_account_manager_layer_test() {
         .clone()
         .unwrap()
         .cast(SenderAccountMessage::UpdateAllocationIds(
-            vec![AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_0))]
+            vec![AllocationId(CollectionId::from(ALLOCATION_ID_0))]
                 .into_iter()
                 .collect(),
         ))

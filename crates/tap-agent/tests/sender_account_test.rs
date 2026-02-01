@@ -10,7 +10,7 @@ use indexer_tap_agent::{
 use ractor::concurrency::Duration;
 use serde_json::json;
 use test_assets::{ALLOCATION_ID_0, TAP_SIGNER as SIGNER};
-use thegraph_core::CollectionId;
+use thegraph_core::{alloy::hex::ToHexExt, CollectionId};
 use wiremock::{
     matchers::{body_string_contains, method},
     Mock, MockServer, ResponseTemplate,
@@ -49,8 +49,7 @@ async fn sender_account_layer_test() {
         .await;
 
     // we expect it to create a sender allocation
-    let allocation_ids =
-        HashSet::from_iter([AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_0))]);
+    let allocation_ids = HashSet::from_iter([AllocationId(CollectionId::from(ALLOCATION_ID_0))]);
     sender_account
         .cast(SenderAccountMessage::UpdateAllocationIds(
             allocation_ids.clone(),
@@ -92,7 +91,7 @@ async fn sender_account_layer_test() {
         .await;
 
     // For Horizon allocations, RAVs are stored in tap_horizon_ravs with collection_id
-    let collection_id = CollectionId::from(ALLOCATION_ID_0).to_string();
+    let collection_id = CollectionId::from(ALLOCATION_ID_0).encode_hex();
     let rav_marked_as_last = sqlx::query(
         r#"
                 SELECT * FROM tap_horizon_ravs WHERE last = true AND collection_id = $1;

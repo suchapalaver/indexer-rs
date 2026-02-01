@@ -270,10 +270,9 @@ fi
 echo "Waiting for indexer-agent to be healthy..."
 interruptible_wait 300 'docker ps | grep indexer-agent | grep -q healthy' "Waiting for indexer-agent to be healthy"
 
-# Ensure indexer-agent DB migrations completed (denylist tables must exist)
-echo "Waiting for indexer-agent DB migrations (denylist tables) ..."
+# Ensure indexer-agent DB migrations completed (denylist table must exist)
+echo "Waiting for indexer-agent DB migrations (denylist table) ..."
 # Use double-quoted outer string to avoid single-quote escaping issues in SQL
-interruptible_wait 180 "docker exec postgres psql -U postgres -d indexer_components_1 -tAc \"SELECT to_regclass('public.scalar_tap_denylist')\" | grep -q scalar_tap_denylist" "Waiting for scalar_tap_denylist table"
 interruptible_wait 180 "docker exec postgres psql -U postgres -d indexer_components_1 -tAc \"SELECT to_regclass('public.tap_horizon_denylist')\" | grep -q tap_horizon_denylist" "Waiting for tap_horizon_denylist table"
 
 echo "Starting subgraph deployment..."

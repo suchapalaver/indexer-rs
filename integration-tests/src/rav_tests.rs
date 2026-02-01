@@ -61,11 +61,11 @@ pub async fn test_tap_rav_v1() -> Result<()> {
 
     // Initial DB snapshot for V1 with current configuration
     println!("\n=== V1 Initial State (Config) ===");
-    db_checker.print_summary(&payer_hex, TapVersion::V1).await?;
+    db_checker.print_summary(&payer_hex, TapVersion::V2).await?;
 
-    let initial_state = db_checker.get_state(&payer_hex, TapVersion::V1).await?;
+    let initial_state = db_checker.get_state(&payer_hex, TapVersion::V2).await?;
     let initial_pending_value = db_checker
-        .get_pending_receipt_value(&allocation_id_hex, &payer_hex, TapVersion::V1)
+        .get_pending_receipt_value(&allocation_id_hex, &payer_hex, TapVersion::V2)
         .await?;
 
     // Get trigger threshold from tap-agent configuration
@@ -125,9 +125,9 @@ pub async fn test_tap_rav_v1() -> Result<()> {
         }
 
         // Check V1 database state after batch
-        let batch_state = db_checker.get_state(&payer_hex, TapVersion::V1).await?;
+        let batch_state = db_checker.get_state(&payer_hex, TapVersion::V2).await?;
         let current_pending_value = db_checker
-            .get_pending_receipt_value(&allocation_id_hex, &payer_hex, TapVersion::V1)
+            .get_pending_receipt_value(&allocation_id_hex, &payer_hex, TapVersion::V2)
             .await?;
 
         // Calculate progress toward trigger threshold using config
@@ -199,9 +199,9 @@ pub async fn test_tap_rav_v1() -> Result<()> {
         // Check after each trigger using DB
         tokio::time::sleep(Duration::from_secs(1)).await;
 
-        let current_state = db_checker.get_state(&payer_hex, TapVersion::V1).await?;
+        let current_state = db_checker.get_state(&payer_hex, TapVersion::V2).await?;
         let current_pending_value = db_checker
-            .get_pending_receipt_value(&allocation_id_hex, &payer_hex, TapVersion::V1)
+            .get_pending_receipt_value(&allocation_id_hex, &payer_hex, TapVersion::V2)
             .await?;
 
         // Calculate progress toward trigger threshold using config
@@ -248,9 +248,9 @@ pub async fn test_tap_rav_v1() -> Result<()> {
     println!("Total V1 queries sent successfully: {total_successful}");
 
     // Final state check using database
-    let final_state = db_checker.get_state(&payer_hex, TapVersion::V1).await?;
+    let final_state = db_checker.get_state(&payer_hex, TapVersion::V2).await?;
     let final_pending_value = db_checker
-        .get_pending_receipt_value(&allocation_id_hex, &payer_hex, TapVersion::V1)
+        .get_pending_receipt_value(&allocation_id_hex, &payer_hex, TapVersion::V2)
         .await?;
 
     println!(
@@ -265,7 +265,7 @@ pub async fn test_tap_rav_v1() -> Result<()> {
 
     // Print detailed breakdown for debugging
     db_checker
-        .print_detailed_summary(&payer_hex, TapVersion::V1)
+        .print_detailed_summary(&payer_hex, TapVersion::V2)
         .await?;
 
     // Alternative success condition: Wait a bit longer for delayed RAV creation
@@ -276,12 +276,12 @@ pub async fn test_tap_rav_v1() -> Result<()> {
             initial_state.rav_count,
             30, // 30 second timeout
             2,  // check every 2 seconds
-            TapVersion::V1,
+            TapVersion::V2,
         )
         .await?;
 
     if rav_created {
-        let final_state_after_wait = db_checker.get_state(&payer_hex, TapVersion::V1).await?;
+        let final_state_after_wait = db_checker.get_state(&payer_hex, TapVersion::V2).await?;
         println!(
             "✅ V1 TEST PASSED: RAV CREATED (delayed)! RAVs: {} → {}",
             initial_state.rav_count, final_state_after_wait.rav_count
@@ -291,7 +291,7 @@ pub async fn test_tap_rav_v1() -> Result<()> {
 
     // Timestamp buffer diagnosis using tap-agent config
     db_checker
-        .diagnose_timestamp_buffer(&payer_hex, &allocation_id_hex, TapVersion::V1)
+        .diagnose_timestamp_buffer(&payer_hex, &allocation_id_hex, TapVersion::V2)
         .await?;
 
     // If we got here, test failed
@@ -1139,9 +1139,9 @@ pub async fn test_direct_service_rav_v2() -> Result<()> {
         final_v2_state.receipt_count - initial_v2_state.receipt_count
     );
 
-    // Print combined summary for debugging
-    println!("\n=== Final Combined State for Debugging ===");
-    db_checker.print_combined_summary(&payer_hex).await?;
+    // Print summary for debugging
+    println!("\n=== Final State for Debugging ===");
+    db_checker.print_summary(&payer_hex, TapVersion::V2).await?;
 
     println!("\n💡 Debug suggestions:");
     println!("   - Check tap-agent logs for 'Error while getting the heaviest allocation'");

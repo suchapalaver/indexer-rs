@@ -39,9 +39,7 @@ use indexer_config::{
     Config, EscrowSubgraphConfig, GraphNodeConfig, IndexerConfig, NetworkSubgraphConfig,
     SubgraphConfig, SubgraphsConfig, TapConfig,
 };
-use indexer_monitor::{
-    escrow_accounts_v1, escrow_accounts_v2, indexer_allocations, DeploymentDetails, SubgraphClient,
-};
+use indexer_monitor::{escrow_accounts_v2, indexer_allocations, DeploymentDetails, SubgraphClient};
 use ractor::{concurrency::JoinHandle, Actor, ActorRef};
 use sender_account::SenderAccountConfig;
 use sender_accounts_manager::SenderAccountsManager;
@@ -75,8 +73,11 @@ pub fn init_metrics() {
 /// This is the main entrypoint for starting up tap-agent
 ///
 /// It uses the static [crate::CONFIG] to configure the agent.
-pub async fn start_agent(
-) -> anyhow::Result<(ActorRef<SenderAccountsManagerMessage>, JoinHandle<()>)> {
+pub async fn start_agent() -> anyhow::Result<(
+    ActorRef<SenderAccountsManagerMessage>,
+    JoinHandle<()>,
+    tokio::sync::mpsc::Sender<sender_accounts_manager::ChannelReceiptNotification>,
+)> {
     use anyhow::Context;
 
     let Config {
@@ -109,7 +110,7 @@ pub async fn start_agent(
                                 query_url: escrow_query_url,
                                 query_auth_token: escrow_query_auth_token,
                                 deployment_id: escrow_deployment_id,
-                                syncing_interval_secs: escrow_sync_interval,
+                                syncing_interval_secs: _escrow_sync_interval,
                             },
                     },
             },
@@ -168,21 +169,6 @@ pub async fn start_agent(
         .await,
     ));
 
-    tracing::info!(
-        "Initializing V1 escrow accounts watcher with indexer {}",
-        indexer_address
-    );
-    let escrow_accounts_v1 = escrow_accounts_v1(
-        escrow_subgraph,
-        *indexer_address,
-        *escrow_sync_interval,
-        false,
-    )
-    .await
-    .with_context(|| "Error creating escrow_accounts channel")?;
-
-    tracing::info!("V1 escrow accounts watcher initialized successfully");
-
     // Verify Horizon is active in the network (V1/Legacy mode removed)
     tracing::info!("Checking Network Subgraph for Horizon readiness");
     match indexer_monitor::is_horizon_active(network_subgraph).await {
@@ -223,22 +209,22 @@ pub async fn start_agent(
 
     let config = Box::leak(Box::new(SenderAccountConfig::from_config(&CONFIG)));
 
+    let (notification_tx, notification_rx) = tokio::sync::mpsc::channel(10_000);
     let args = SenderAccountsManagerArgs {
         config,
         domain_separator_v2: EIP_712_DOMAIN_V2.clone(),
         pgpool,
         indexer_allocations,
-        escrow_accounts_v1,
         escrow_accounts_v2,
         escrow_subgraph,
         network_subgraph,
         sender_aggregator_endpoints: sender_aggregator_endpoints.clone(),
         prefix: None,
-        // Standalone tap-agent binary uses pg_notify only, no channel
-        receipt_notification_rx: None,
+        receipt_notification_rx: notification_rx,
     };
 
-    Ok(SenderAccountsManager::spawn(None, SenderAccountsManager, args).await?)
+    let (manager, handle) = SenderAccountsManager::spawn(None, SenderAccountsManager, args).await?;
+    Ok((manager, handle, notification_tx))
 }
 
 /// Arguments for starting the TAP agent with pre-created dependencies.
@@ -259,8 +245,6 @@ pub struct StartAgentArgs {
             indexer_allocation::Allocation,
         >,
     >,
-    /// V1 escrow accounts watcher
-    pub escrow_accounts_v1: tokio::sync::watch::Receiver<indexer_monitor::EscrowAccounts>,
     /// V2 escrow accounts watcher
     pub escrow_accounts_v2: tokio::sync::watch::Receiver<indexer_monitor::EscrowAccounts>,
     /// EIP-712 domain separator for V2 (Horizon)
@@ -274,13 +258,12 @@ pub struct StartAgentArgs {
     pub is_horizon_enabled: bool,
     /// Optional prefix for actor names (useful for testing)
     pub prefix: Option<String>,
-    /// Optional channel receiver for receipt notifications from the service.
+    /// Channel receiver for receipt notifications from the service.
     ///
-    /// When provided, the manager will listen for notifications from this channel
-    /// in addition to pg_notify. This enables direct notification from the service
-    /// in the unified binary, reducing latency and database load.
+    /// The TAP agent no longer listens to pg_notify; notifications must arrive
+    /// through this channel.
     pub receipt_notification_rx:
-        Option<tokio::sync::mpsc::Receiver<sender_accounts_manager::ChannelReceiptNotification>>,
+        tokio::sync::mpsc::Receiver<sender_accounts_manager::ChannelReceiptNotification>,
 }
 
 /// Start the TAP agent with pre-created dependencies.
@@ -309,7 +292,6 @@ pub async fn start_agent_with_deps(
         network_subgraph,
         escrow_subgraph,
         indexer_allocations,
-        escrow_accounts_v1,
         escrow_accounts_v2,
         domain_separator_v2,
         config,
@@ -332,7 +314,6 @@ pub async fn start_agent_with_deps(
         domain_separator_v2,
         pgpool,
         indexer_allocations,
-        escrow_accounts_v1,
         escrow_accounts_v2,
         escrow_subgraph,
         network_subgraph,

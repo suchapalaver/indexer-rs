@@ -562,7 +562,7 @@ mod test {
             .await?;
 
             // Checking that there are no receipts left
-            let scalar_tap_receipts_db_count: i64 = sqlx::query!(
+            let tap_horizon_receipts_db_count: i64 = sqlx::query!(
                 r#"
                 SELECT count(*)
                 FROM tap_horizon_receipts
@@ -572,7 +572,7 @@ mod test {
             .await?
             .count
             .unwrap();
-            assert_eq!(scalar_tap_receipts_db_count, 0);
+            assert_eq!(tap_horizon_receipts_db_count, 0);
             Ok(())
         }
     }
@@ -603,7 +603,7 @@ mod test {
             context: TapAgentContext::builder()
                 .pgpool(test_db.pool.clone())
                 .escrow_accounts(escrow_accounts)
-                .subgraph_service_address(test_assets::TAP_SENDER.1) // Use a dummy address for tests
+                .subgraph_service_address(Address::ZERO) // Must match data_service in created receipts
                 .build(),
             _test_db: test_db,
         };
@@ -674,7 +674,7 @@ mod test {
             context: TapAgentContext::builder()
                 .pgpool(test_db.pool.clone())
                 .escrow_accounts(escrow_accounts.clone())
-                .subgraph_service_address(test_assets::TAP_SENDER.1) // Use a dummy address for tests
+                .subgraph_service_address(Address::ZERO) // Must match data_service in created receipts
                 .build(),
             _test_db: test_db,
         };
@@ -803,7 +803,7 @@ mod test {
             context: TapAgentContext::builder()
                 .pgpool(test_db.pool.clone())
                 .escrow_accounts(escrow_accounts.clone())
-                .subgraph_service_address(test_assets::TAP_SENDER.1) // Use a dummy address for tests
+                .subgraph_service_address(Address::ZERO) // Must match data_service in created receipts
                 .build(),
             _test_db: test_db,
         };

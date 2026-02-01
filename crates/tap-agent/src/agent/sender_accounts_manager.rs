@@ -18,10 +18,10 @@ use prometheus::{register_counter_vec, CounterVec};
 use ractor::{Actor, ActorCell, ActorProcessingErr, ActorRef, SupervisionEvent};
 use reqwest::Url;
 use serde::Deserialize;
-use sqlx::{postgres::PgListener, PgPool};
+use sqlx::PgPool;
 use thegraph_core::{
     alloy::{hex::ToHexExt, primitives::Address, sol_types::Eip712Domain},
-    AllocationId as AllocationIdCore, CollectionId,
+    CollectionId,
 };
 use tokio::{select, sync::watch::Receiver};
 
@@ -41,28 +41,11 @@ pub(crate) static RECEIPTS_CREATED: LazyLock<CounterVec> = LazyLock::new(|| {
 
 const RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Notification received by pgnotify for V1 (legacy) receipts
-///
-/// This contains a list of properties that are sent by postgres when a V1 receipt is inserted
-#[derive(Deserialize, Debug, PartialEq, Eq, Clone)]
-pub struct NewReceiptNotificationV1 {
-    /// id inside the table
-    pub id: u64,
-    /// address of the allocation (V1 uses 20-byte allocation_id)
-    pub allocation_id: Address,
-    /// address of wallet that signed this receipt
-    pub signer_address: Address,
-    /// timestamp of the receipt
-    pub timestamp_ns: u64,
-    /// value of the receipt
-    pub value: u128,
-}
-
-/// Notification received by pgnotify for V2 (Horizon) receipts
+/// Notification received by pgnotify for Horizon (V2) receipts
 ///
 /// This contains a list of properties that are sent by postgres when a V2 receipt is inserted
 #[derive(Deserialize, Debug, PartialEq, Eq, Clone)]
-pub struct NewReceiptNotificationV2 {
+pub struct NewReceiptNotification {
     /// id inside the table
     pub id: u64,
     /// collection id (V2 uses 32-byte collection_id)
@@ -75,95 +58,79 @@ pub struct NewReceiptNotificationV2 {
     pub value: u128,
 }
 
-/// Unified notification that can represent both V1 and V2 receipts
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub enum NewReceiptNotification {
-    /// V1 (Legacy) receipt notification with allocation_id
-    V1(NewReceiptNotificationV1),
-    /// V2 (Horizon) receipt notification with collection_id
-    V2(NewReceiptNotificationV2),
-}
-
 impl NewReceiptNotification {
     /// Get the ID regardless of version
     pub fn id(&self) -> u64 {
-        match self {
-            NewReceiptNotification::V1(n) => n.id,
-            NewReceiptNotification::V2(n) => n.id,
-        }
+        self.id
     }
 
     /// Get the signer address regardless of version
     pub fn signer_address(&self) -> Address {
-        match self {
-            NewReceiptNotification::V1(n) => n.signer_address,
-            NewReceiptNotification::V2(n) => n.signer_address,
-        }
+        self.signer_address
     }
 
     /// Get the timestamp regardless of version
     pub fn timestamp_ns(&self) -> u64 {
-        match self {
-            NewReceiptNotification::V1(n) => n.timestamp_ns,
-            NewReceiptNotification::V2(n) => n.timestamp_ns,
-        }
+        self.timestamp_ns
     }
 
     /// Get the value regardless of version
     pub fn value(&self) -> u128 {
-        match self {
-            NewReceiptNotification::V1(n) => n.value,
-            NewReceiptNotification::V2(n) => n.value,
-        }
+        self.value
     }
 
     /// Get the allocation ID as a unified type
     #[tracing::instrument(skip(self), ret)]
     pub fn allocation_id(&self) -> AllocationId {
-        match self {
-            NewReceiptNotification::V1(n) => {
-                AllocationId::Legacy(AllocationIdCore::from(n.allocation_id))
-            }
-            NewReceiptNotification::V2(n) => {
-                // Convert the hex string to CollectionId (trim spaces from fixed-length DB field)
-                let trimmed = n.collection_id.trim();
-                match CollectionId::from_str(trimmed) {
-                    Ok(collection_id) => AllocationId::Horizon(collection_id),
-                    Err(e) => {
-                        // Check if this is a 20-byte address (40 hex chars) from migration period
-                        // TRST-L-9: Always route V2 receipts to Horizon, never downgrade to Legacy
-                        let hex_str = trimmed.strip_prefix("0x").unwrap_or(trimmed);
-                        if hex_str.len() == 40 {
-                            // 20-byte address during migration - convert to CollectionId
-                            match Address::from_str(&format!("0x{hex_str}")) {
-                                Ok(address) => {
-                                    tracing::debug!(
-                                        collection_id = %n.collection_id,
-                                        address = %address,
-                                        "Converting 20-byte address to CollectionId for V2 receipt"
-                                    );
-                                    return AllocationId::Horizon(CollectionId::from(address));
-                                }
-                                Err(addr_err) => {
-                                    tracing::error!(
-                                        collection_id = %n.collection_id,
-                                        error = %addr_err,
-                                        "Failed to parse 20-byte address"
-                                    );
-                                }
-                            }
-                        } else {
+        // Convert the hex string to CollectionId (trim spaces from fixed-length DB field)
+        let trimmed = self.collection_id.trim();
+        match CollectionId::from_str(trimmed) {
+            Ok(collection_id) => AllocationId(collection_id),
+            Err(e) => {
+                // Check if this is a 20-byte address (40 hex chars) from migration period
+                // TRST-L-9: Always route V2 receipts to Horizon, never downgrade to Legacy
+                let hex_str = trimmed.strip_prefix("0x").unwrap_or(trimmed);
+                if hex_str.len() == 64 {
+                    match CollectionId::from_str(&format!("0x{hex_str}")) {
+                        Ok(collection_id) => return AllocationId(collection_id),
+                        Err(hex_err) => {
                             tracing::error!(
-                                collection_id = %n.collection_id,
-                                hex_len = hex_str.len(),
-                                error = %e,
-                                "Failed to parse collection_id from database notification"
+                                collection_id = %self.collection_id,
+                                error = %hex_err,
+                                "Failed to parse 32-byte collection_id with 0x prefix"
                             );
                         }
-                        // Fallback: use zero CollectionId but stay on Horizon path
-                        AllocationId::Horizon(CollectionId::from(Address::ZERO))
                     }
                 }
+                if hex_str.len() == 40 {
+                    // 20-byte address during migration - convert to CollectionId
+                    match Address::from_str(&format!("0x{hex_str}")) {
+                        Ok(address) => {
+                            tracing::debug!(
+                                collection_id = %self.collection_id,
+                                address = %address,
+                                "Converting 20-byte address to CollectionId for V2 receipt"
+                            );
+                            return AllocationId(CollectionId::from(address));
+                        }
+                        Err(addr_err) => {
+                            tracing::error!(
+                                collection_id = %self.collection_id,
+                                error = %addr_err,
+                                "Failed to parse 20-byte address"
+                            );
+                        }
+                    }
+                } else {
+                    tracing::error!(
+                        collection_id = %self.collection_id,
+                        hex_len = hex_str.len(),
+                        error = %e,
+                        "Failed to parse collection_id from database notification"
+                    );
+                }
+                // Fallback: use zero CollectionId but stay on Horizon path
+                AllocationId(CollectionId::from(Address::ZERO))
             }
         }
     }
@@ -173,67 +140,24 @@ impl NewReceiptNotification {
 #[derive(Debug, Clone)]
 pub struct SenderAccountsManager;
 
-/// Wrapped AllocationId with two possible variants
-///
-/// This is used by children actors to define what kind of
-/// SenderAllocation must be created to handle the correct
-/// Rav and Receipt types
+/// Wrapped AllocationId for Horizon (V2) collection ids.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum AllocationId {
-    /// Legacy allocation using AllocationId from thegraph-core
-    Legacy(AllocationIdCore),
-    /// New Subgraph DataService allocation using CollectionId
-    Horizon(CollectionId),
-}
+pub struct AllocationId(pub CollectionId);
 
 impl AllocationId {
-    /// Canonical hex (no 0x); 40 chars for Legacy, 64 for Horizon
+    /// Canonical hex (no 0x); 64 chars for Horizon
     pub fn to_hex(&self) -> String {
-        match self {
-            AllocationId::Legacy(allocation_id) => (**allocation_id).encode_hex(),
-            AllocationId::Horizon(collection_id) => collection_id.encode_hex(),
-        }
+        self.0.encode_hex()
     }
 
-    /// Get the underlying Address for Legacy allocations.
-    ///
-    /// Deprecated: Prefer `address()` which returns a normalized Address for both Legacy and Horizon.
-    #[deprecated(
-        note = "Use `address()` for both Legacy and Horizon; this returns None for Horizon"
-    )]
-    pub fn as_address(&self) -> Option<Address> {
-        match self {
-            AllocationId::Legacy(allocation_id) => Some(**allocation_id),
-            AllocationId::Horizon(_) => None,
-        }
-    }
-
-    /// Legacy-only accessor returning an optional address.
-    ///
-    /// Returns:
-    /// - Some(address) for Legacy allocations
-    /// - None for Horizon allocations
-    pub fn legacy_address(&self) -> Option<Address> {
-        match self {
-            AllocationId::Legacy(allocation_id) => Some(**allocation_id),
-            AllocationId::Horizon(_) => None,
-        }
-    }
-
-    /// Get an Address representation for both allocation types
+    /// Get an Address representation for Horizon collection ids
     pub fn address(&self) -> Address {
-        match self {
-            AllocationId::Legacy(allocation_id) => **allocation_id,
-            AllocationId::Horizon(collection_id) => {
-                AllocationIdCore::from(*collection_id).into_inner()
-            }
-        }
+        self.0.as_address()
     }
 
     /// Normalized 20-byte address as lowercase hex (no 0x prefix).
     ///
     /// Behavior:
-    /// - Legacy (V1): returns the allocation address as hex.
     /// - Horizon (V2): derives the 20-byte address from the 32-byte `CollectionId`
     ///   via `thegraph_core::AllocationId::from(collection_id)` (last 20 bytes) and encodes as hex.
     ///
@@ -251,19 +175,13 @@ impl AllocationId {
 
 impl Display for AllocationId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AllocationId::Legacy(allocation_id) => write!(f, "{allocation_id}"),
-            AllocationId::Horizon(collection_id) => write!(f, "{collection_id}"),
-        }
+        write!(f, "{}", self.0)
     }
 }
 
-/// Type used in [SenderAccountsManager] and [SenderAccount] to route the correct escrow queries
-/// and to use the correct set of tables
+/// Type used in [SenderAccountsManager] and [SenderAccount] to route Horizon-specific logic.
 #[derive(Clone, Copy, Debug)]
 pub enum SenderType {
-    /// SenderAccounts that are found in Escrow Subgraph v1 (Legacy)
-    Legacy,
     /// SenderAccounts that are found in Tap Collector v2 (Horizon)
     Horizon,
 }
@@ -275,27 +193,17 @@ pub enum SenderAccountsManagerMessage {
     /// Spawn and Stop [SenderAccount]s that were added or removed
     /// in comparison with it current state and updates the state
     ///
-    /// This tracks only v1 accounts
-    UpdateSenderAccountsV1(HashSet<Address>),
-
-    /// Spawn and Stop [SenderAccount]s that were added or removed
-    /// in comparison with it current state and updates the state
-    ///
     /// This tracks only v2 accounts
     UpdateSenderAccountsV2(HashSet<Address>),
 }
 
-/// Receipt notification that can be sent through a channel from the service.
+/// Receipt notification sent through a channel from the service.
 ///
-/// This is an alternative to pg_notify for the unified binary where the service
-/// can directly notify the TAP agent about new receipts without going through
-/// the database notification channel.
+/// TAP agent consumes these notifications directly (channel-only path).
 #[derive(Debug, Clone)]
 pub struct ChannelReceiptNotification {
     /// The receipt notification (V1 or V2)
     pub notification: NewReceiptNotification,
-    /// Whether this is a V1 (Legacy) or V2 (Horizon) sender
-    pub sender_type: SenderType,
 }
 
 /// Arguments received in startup while spawing [SenderAccount] actor
@@ -310,8 +218,6 @@ pub struct SenderAccountsManagerArgs {
     pub pgpool: PgPool,
     /// Watcher that returns a map of open and recently closed allocation ids
     pub indexer_allocations: Receiver<HashMap<Address, Allocation>>,
-    /// Watcher containing the escrow accounts for v1
-    pub escrow_accounts_v1: Receiver<EscrowAccounts>,
     /// Watcher containing the escrow accounts for v2
     pub escrow_accounts_v2: Receiver<EscrowAccounts>,
     /// SubgraphClient of the escrow subgraph
@@ -324,12 +230,11 @@ pub struct SenderAccountsManagerArgs {
     /// Prefix used to bypass limitations of global actor registry (used for tests)
     pub prefix: Option<String>,
 
-    /// Optional channel receiver for receipt notifications from the service.
+    /// Channel receiver for receipt notifications from the service.
     ///
-    /// When provided, the manager will listen for notifications from this channel
-    /// in addition to (or instead of) pg_notify. This enables direct notification
-    /// from the service in the unified binary.
-    pub receipt_notification_rx: Option<tokio::sync::mpsc::Receiver<ChannelReceiptNotification>>,
+    /// The TAP agent no longer listens to pg_notify; all receipt notifications
+    /// must arrive through this channel.
+    pub receipt_notification_rx: tokio::sync::mpsc::Receiver<ChannelReceiptNotification>,
 }
 
 /// State for [SenderAccountsManager] actor
@@ -337,11 +242,8 @@ pub struct SenderAccountsManagerArgs {
 /// This is a separate instance that makes it easier to have mutable
 /// reference, for more information check ractor library
 pub struct State {
-    sender_ids_v1: HashSet<Address>,
     sender_ids_v2: HashSet<Address>,
-    new_receipts_watcher_handle_v1: Option<tokio::task::JoinHandle<()>>,
-    new_receipts_watcher_handle_v2: Option<tokio::task::JoinHandle<()>>,
-    /// Handle for the channel-based receipt notification watcher (unified binary mode)
+    /// Handle for the channel-based receipt notification watcher
     channel_receipts_watcher_handle: Option<tokio::task::JoinHandle<()>>,
 
     config: &'static SenderAccountConfig,
@@ -349,8 +251,6 @@ pub struct State {
     pgpool: PgPool,
     // Raw allocation watcher (address -> Allocation). Normalized per-sender later.
     indexer_allocations: Receiver<HashMap<Address, Allocation>>,
-    /// Watcher containing the escrow accounts for v1
-    escrow_accounts_v1: Receiver<EscrowAccounts>,
     /// Watcher containing the escrow accounts for v2
     escrow_accounts_v2: Receiver<EscrowAccounts>,
     escrow_subgraph: &'static SubgraphClient,
@@ -376,7 +276,6 @@ impl Actor for SenderAccountsManager {
             domain_separator_v2,
             indexer_allocations,
             pgpool,
-            escrow_accounts_v1,
             escrow_accounts_v2,
             escrow_subgraph,
             network_subgraph,
@@ -386,101 +285,43 @@ impl Actor for SenderAccountsManager {
         }: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
         // Do not pre-map allocations globally. We keep the raw watcher and
-        // normalize per SenderAccount based on its sender_type (Legacy/Horizon).
+        // normalize per SenderAccount based on Horizon collection ids.
         tracing::info!(
             horizon_active = %config.tap_mode.is_horizon(),
             "Using raw indexer_allocations watcher; normalization happens per sender"
         );
-        // we need two connections because each one will listen to different notify events
-        let pglistener_v1 = PgListener::connect_with(&pgpool.clone()).await.unwrap();
-
-        // Extra safety, we don't want to have a listener if horizon is not enabled
-        let pglistener_v2 = if config.tap_mode.is_horizon() {
-            Some(PgListener::connect_with(&pgpool.clone()).await.unwrap())
-        } else {
-            None
-        };
-
         let myself_clone = myself.clone();
-        let accounts_clone = escrow_accounts_v1.clone();
-        watch_pipe(accounts_clone, move |escrow_accounts| {
+        let _escrow_accounts_v2 = escrow_accounts_v2.clone();
+        watch_pipe(_escrow_accounts_v2, move |escrow_accounts| {
             let senders = escrow_accounts.get_senders();
             myself_clone
-                .cast(SenderAccountsManagerMessage::UpdateSenderAccountsV1(
+                .cast(SenderAccountsManagerMessage::UpdateSenderAccountsV2(
                     senders,
                 ))
                 .unwrap_or_else(|e| {
-                    tracing::error!(error = ?e, "Error while updating sender_accounts v1");
+                    tracing::error!(error = ?e, "Error while updating sender_accounts v2");
                 });
             async {}
         });
 
-        // Extra safety, we don't want to have a
-        // escrow account listener if horizon is not enabled
-        if config.tap_mode.is_horizon() {
-            let myself_clone = myself.clone();
-            let _escrow_accounts_v2 = escrow_accounts_v2.clone();
-            watch_pipe(_escrow_accounts_v2, move |escrow_accounts| {
-                let senders = escrow_accounts.get_senders();
-                myself_clone
-                    .cast(SenderAccountsManagerMessage::UpdateSenderAccountsV2(
-                        senders,
-                    ))
-                    .unwrap_or_else(|e| {
-                        tracing::error!(error = ?e, "Error while updating sender_accounts v2");
-                    });
-                async {}
-            });
-        }
-
         let mut state = State {
             config,
             domain_separator_v2,
-            sender_ids_v1: HashSet::new(),
             sender_ids_v2: HashSet::new(),
-            new_receipts_watcher_handle_v1: None,
-            new_receipts_watcher_handle_v2: None,
             channel_receipts_watcher_handle: None,
             pgpool: pgpool.clone(),
             indexer_allocations,
-            escrow_accounts_v1: escrow_accounts_v1.clone(),
             escrow_accounts_v2: escrow_accounts_v2.clone(),
             escrow_subgraph,
             network_subgraph,
             sender_aggregator_endpoints,
             prefix: prefix.clone(),
         };
-        // v1
-        let sender_allocation_v1 = select! {
-            sender_allocation = state.get_pending_sender_allocation_id_v1() => sender_allocation,
+        let sender_allocation_v2 = select! {
+            sender_allocation = state.get_pending_sender_allocation_id_v2() => sender_allocation,
             _ = tokio::time::sleep(state.config.tap_sender_timeout) => {
                 panic!("Timeout while getting pending sender allocation ids");
             }
-        };
-        state.sender_ids_v1.extend(sender_allocation_v1.keys());
-        stream::iter(sender_allocation_v1)
-            .map(|(sender_id, allocation_ids)| {
-                state.create_or_deny_sender(
-                    myself.get_cell(),
-                    sender_id,
-                    allocation_ids,
-                    SenderType::Legacy,
-                )
-            })
-            .buffer_unordered(10) // Limit concurrency to 10 senders at a time
-            .collect::<Vec<()>>()
-            .await;
-
-        // v2
-        let sender_allocation_v2 = if state.config.tap_mode.is_horizon() {
-            select! {
-                sender_allocation = state.get_pending_sender_allocation_id_v2() => sender_allocation,
-                _ = tokio::time::sleep(state.config.tap_sender_timeout) => {
-                    panic!("Timeout while getting pending sender allocation ids");
-                }
-            }
-        } else {
-            HashMap::new()
         };
 
         state.sender_ids_v2.extend(sender_allocation_v2.keys());
@@ -497,48 +338,13 @@ impl Actor for SenderAccountsManager {
             .collect::<Vec<()>>()
             .await;
 
-        // Start the new_receipts_watcher task that will consume from the `pglistener`
-        // after starting all senders
-        state.new_receipts_watcher_handle_v1 = Some(tokio::spawn(
-            new_receipts_watcher()
-                .sender_type(SenderType::Legacy)
-                .actor_cell(myself.get_cell())
-                .pglistener(pglistener_v1)
-                .escrow_accounts_rx(escrow_accounts_v1)
-                .maybe_prefix(prefix.clone())
-                .call(),
-        ));
-
-        // Start the new_receipts_watcher task that will consume from the `pglistener`
-        // after starting all senders
-        state.new_receipts_watcher_handle_v2 = None;
-
-        // Extra safety, we don't want to have a listener if horizon is not enabled
-        if let Some(listener_v2) = pglistener_v2 {
-            state.new_receipts_watcher_handle_v2 = Some(tokio::spawn(
-                new_receipts_watcher()
-                    .actor_cell(myself.get_cell())
-                    .pglistener(listener_v2)
-                    .escrow_accounts_rx(escrow_accounts_v2.clone())
-                    .sender_type(SenderType::Horizon)
-                    .maybe_prefix(prefix.clone())
-                    .call(),
-            ));
-        };
-
-        // Start channel-based receipt watcher if a channel is provided (unified binary mode)
-        if let Some(rx) = receipt_notification_rx {
-            tracing::info!(
-                "Starting channel-based receipt notification watcher (unified binary mode)"
-            );
-            state.channel_receipts_watcher_handle = Some(tokio::spawn(channel_receipts_watcher(
-                myself.get_cell(),
-                rx,
-                state.escrow_accounts_v1.clone(),
-                state.escrow_accounts_v2.clone(),
-                state.prefix.clone(),
-            )));
-        }
+        tracing::info!("Starting channel-based receipt notification watcher");
+        state.channel_receipts_watcher_handle = Some(tokio::spawn(channel_receipts_watcher(
+            myself.get_cell(),
+            receipt_notification_rx,
+            state.escrow_accounts_v2.clone(),
+            state.prefix.clone(),
+        )));
 
         tracing::info!("SenderAccountManager created!");
         Ok(state)
@@ -551,14 +357,6 @@ impl Actor for SenderAccountsManager {
     ) -> Result<(), ActorProcessingErr> {
         // Abort the notification watchers on drop. Otherwise they may panic because the PgPool
         // could get dropped before. (Observed in tests)
-        if let Some(handle) = &state.new_receipts_watcher_handle_v1 {
-            handle.abort();
-        }
-
-        if let Some(handle) = &state.new_receipts_watcher_handle_v2 {
-            handle.abort();
-        }
-
         if let Some(handle) = &state.channel_receipts_watcher_handle {
             handle.abort();
         }
@@ -578,31 +376,6 @@ impl Actor for SenderAccountsManager {
         );
 
         match msg {
-            SenderAccountsManagerMessage::UpdateSenderAccountsV1(target_senders) => {
-                // Create new sender accounts
-                for sender in target_senders.difference(&state.sender_ids_v1) {
-                    state
-                        .create_or_deny_sender(
-                            myself.get_cell(),
-                            *sender,
-                            HashSet::new(),
-                            SenderType::Legacy,
-                        )
-                        .await;
-                }
-
-                // Remove sender accounts
-                for sender in state.sender_ids_v1.difference(&target_senders) {
-                    if let Some(sender_handle) = ActorRef::<SenderAccountMessage>::where_is(
-                        state.format_sender_account(sender, SenderType::Legacy),
-                    ) {
-                        sender_handle.stop(None);
-                    }
-                }
-
-                state.sender_ids_v1 = target_senders;
-            }
-
             SenderAccountsManagerMessage::UpdateSenderAccountsV2(target_senders) => {
                 // Create new sender accounts
                 for sender in target_senders.difference(&state.sender_ids_v2) {
@@ -664,48 +437,19 @@ impl Actor for SenderAccountsManager {
                     tracing::error!(%sender_id, "Could not convert sender_id to Address");
                     return Ok(());
                 };
-                let sender_type = match splitter.next_back() {
-                    Some("legacy") => SenderType::Legacy,
-                    Some("horizon") => SenderType::Horizon,
-                    _ => {
-                        tracing::error!(%sender_id, "Could not extract sender_type from name");
-                        return Ok(());
-                    }
-                };
+                let sender_type = SenderType::Horizon;
 
-                // Get the sender's allocations taking into account
-                // the sender type
-                let allocations = match sender_type {
-                    SenderType::Legacy => {
-                        let mut sender_allocation = select! {
-                            sender_allocation = state.get_pending_sender_allocation_id_v1() => sender_allocation,
-                            _ = tokio::time::sleep(state.config.tap_sender_timeout) => {
-                                tracing::error!(version = "V1", "Timeout while getting pending sender allocation ids");
-                                return Ok(());
-                            }
-                        };
-                        sender_allocation
-                            .remove(&sender_id)
-                            .unwrap_or(HashSet::new())
-                    }
-                    SenderType::Horizon => {
-                        if !state.config.tap_mode.is_horizon() {
-                            tracing::info!(%sender_id, "Horizon sender failed but horizon is disabled, not restarting");
-
+                let allocations = {
+                    let mut sender_allocation = select! {
+                        sender_allocation = state.get_pending_sender_allocation_id_v2() => sender_allocation,
+                        _ = tokio::time::sleep(state.config.tap_sender_timeout) => {
+                            tracing::error!(version = "V2", "Timeout while getting pending sender allocation ids");
                             return Ok(());
                         }
-
-                        let mut sender_allocation = select! {
-                            sender_allocation = state.get_pending_sender_allocation_id_v2() => sender_allocation,
-                            _ = tokio::time::sleep(state.config.tap_sender_timeout) => {
-                                tracing::error!(version = "V2", "Timeout while getting pending sender allocation ids");
-                                return Ok(());
-                            }
-                        };
-                        sender_allocation
-                            .remove(&sender_id)
-                            .unwrap_or(HashSet::new())
-                    }
+                    };
+                    sender_allocation
+                        .remove(&sender_id)
+                        .unwrap_or(HashSet::new())
                 };
 
                 state
@@ -726,7 +470,6 @@ impl State {
             sender_allocation_id.push(':');
         }
         sender_allocation_id.push_str(match sender_type {
-            SenderType::Legacy => "legacy:",
             SenderType::Horizon => "horizon:",
         });
         sender_allocation_id.push_str(&format!("{sender}"));
@@ -756,7 +499,6 @@ impl State {
         for alloc_id in &allocation_ids {
             tracing::debug!(
                 allocation_id = %alloc_id,
-                variant = %match alloc_id { AllocationId::Legacy(_) => "Legacy", AllocationId::Horizon(_) => "Horizon" },
                 address = %alloc_id.address(),
                 "Initial allocation",
             );
@@ -817,109 +559,6 @@ impl State {
     /// Used to create [SenderAccount] instances for all senders that have unfinalized allocations
     /// and try to finalize them if they have become ineligible.
     ///
-    /// This loads legacy allocations
-    async fn get_pending_sender_allocation_id_v1(&self) -> HashMap<Address, HashSet<AllocationId>> {
-        // First we accumulate all allocations for each sender. This is because we may have more
-        // than one signer per sender in DB.
-        let mut unfinalized_sender_allocations_map: HashMap<Address, HashSet<AllocationId>> =
-            HashMap::new();
-
-        let receipts_signer_allocations_in_db = sqlx::query!(
-            r#"
-                WITH grouped AS (
-                    SELECT signer_address, allocation_id
-                    FROM scalar_tap_receipts
-                    GROUP BY signer_address, allocation_id
-                )
-                SELECT 
-                    signer_address,
-                    ARRAY_AGG(allocation_id) AS allocation_ids
-                FROM grouped
-                GROUP BY signer_address
-            "#
-        )
-        .fetch_all(&self.pgpool)
-        .await
-        .expect("should be able to fetch pending receipts V1 from the database");
-
-        for row in receipts_signer_allocations_in_db {
-            let allocation_ids = row
-                .allocation_ids
-                .expect("all receipts V1 should have an allocation_id")
-                .iter()
-                .map(|allocation_id| {
-                    AllocationId::Legacy(
-                        AllocationIdCore::from_str(allocation_id)
-                            .expect("allocation_id should be a valid allocation ID"),
-                    )
-                })
-                .collect::<HashSet<_>>();
-            let signer_id = Address::from_str(&row.signer_address)
-                .expect("signer_address should be a valid address");
-            let sender_id = self
-                .escrow_accounts_v1
-                .borrow()
-                .get_sender_for_signer(&signer_id)
-                .expect("should be able to get sender from signer");
-
-            // Accumulate allocations for the sender
-            unfinalized_sender_allocations_map
-                .entry(sender_id)
-                .or_default()
-                .extend(allocation_ids);
-        }
-
-        let nonfinal_ravs_sender_allocations_in_db = sqlx::query!(
-            r#"
-                SELECT
-                    sender_address,
-                    ARRAY_AGG(DISTINCT allocation_id) FILTER (WHERE NOT last) AS allocation_ids
-                FROM scalar_tap_ravs
-                GROUP BY sender_address
-            "#
-        )
-        .fetch_all(&self.pgpool)
-        .await
-        .expect("should be able to fetch unfinalized RAVs V1 from the database");
-
-        for row in nonfinal_ravs_sender_allocations_in_db {
-            // Check if allocation_ids is Some before processing,
-            // as ARRAY_AGG with FILTER returns NULL
-            // instead of an empty array
-            if let Some(allocation_id_strings) = row.allocation_ids {
-                let allocation_ids = allocation_id_strings
-                    .iter()
-                    .map(|allocation_id| {
-                        AllocationId::Legacy(
-                            AllocationIdCore::from_str(allocation_id)
-                                .expect("allocation_id should be a valid allocation ID"),
-                        )
-                    })
-                    .collect::<HashSet<_>>();
-
-                if !allocation_ids.is_empty() {
-                    let sender_id = Address::from_str(&row.sender_address)
-                        .expect("sender_address should be a valid address");
-
-                    unfinalized_sender_allocations_map
-                        .entry(sender_id)
-                        .or_default()
-                        .extend(allocation_ids);
-                }
-            } else {
-                // Log the case when allocation_ids is NULL
-                tracing::warn!(
-                    "Found NULL allocation_ids. This may indicate all RAVs are finalized."
-                );
-            }
-        }
-        unfinalized_sender_allocations_map
-    }
-
-    /// Gather all outstanding receipts and unfinalized RAVs from the database.
-    /// Used to create [SenderAccount] instances for all senders that have unfinalized allocations
-    /// and try to finalize them if they have become ineligible.
-    ///
     /// This loads horizon allocations
     async fn get_pending_sender_allocation_id_v2(&self) -> HashMap<Address, HashSet<AllocationId>> {
         // First we accumulate all allocations for each sender. This is because we may have more
@@ -967,10 +606,10 @@ impl State {
                             // 20-byte address -> convert to CollectionId using From<Address>
                             let address = Address::from_str(&format!("0x{hex_str}"))
                                 .unwrap_or_else(|e| panic!("Invalid address '{trimmed}': {e}"));
-                            AllocationId::Horizon(CollectionId::from(address))
+                            AllocationId(CollectionId::from(address))
                         } else if hex_str.len() == 64 {
                             // 32-byte CollectionId
-                            AllocationId::Horizon(CollectionId::from_str(&format!("0x{hex_str}")).unwrap_or_else(|e| {
+                            AllocationId(CollectionId::from_str(&format!("0x{hex_str}")).unwrap_or_else(|e| {
                                 panic!("Invalid collection_id '{trimmed}': {e}")
                             }))
                         } else {
@@ -1018,10 +657,17 @@ impl State {
                 let allocation_ids = allocation_id_strings
                     .iter()
                     .map(|collection_id| {
-                        AllocationId::Horizon(
-                            CollectionId::from_str(collection_id)
-                                .expect("collection_id should be a valid collection ID"),
-                        )
+                        AllocationId({
+                            let trimmed = collection_id.trim();
+                            let hex_str = trimmed.strip_prefix("0x").unwrap_or(trimmed);
+                            let prefixed = if hex_str.len() == 64 {
+                                format!("0x{hex_str}")
+                            } else {
+                                trimmed.to_string()
+                            };
+                            CollectionId::from_str(&prefixed)
+                                .expect("collection_id should be a valid collection ID")
+                        })
                     })
                     .collect::<HashSet<_>>();
 
@@ -1054,39 +700,25 @@ impl State {
         allocation_ids: HashSet<AllocationId>,
         sender_type: SenderType,
     ) -> anyhow::Result<SenderAccountArgs> {
-        let escrow_accounts = match sender_type {
-            SenderType::Legacy => self.escrow_accounts_v1.clone(),
-            SenderType::Horizon => self.escrow_accounts_v2.clone(),
-        };
+        let escrow_accounts = self.escrow_accounts_v2.clone();
 
-        // Build a normalized allocation watcher for this sender type using isLegacy flag
-        // from the Network Subgraph. Fallback: if the flag is missing, normalize by sender_type.
+        // Build a normalized allocation watcher for Horizon using the isLegacy flag
+        // from the Network Subgraph (legacy allocations are ignored).
         let indexer_allocations = {
             let sender_type_for_log = sender_type;
             map_watcher(self.indexer_allocations.clone(), move |alloc_map| {
                 let total = alloc_map.len();
                 let mut legacy_count = 0usize;
                 let mut horizon_count = 0usize;
-                let mut mismatched = 0usize;
                 let set: HashSet<AllocationId> = alloc_map
                     .iter()
                     .filter_map(|(addr, alloc)| {
                         if alloc.is_legacy {
                             legacy_count += 1;
-                            if matches!(sender_type_for_log, SenderType::Legacy) {
-                                Some(AllocationId::Legacy(AllocationIdCore::from(*addr)))
-                            } else {
-                                mismatched += 1;
-                                None
-                            }
+                            None
                         } else {
                             horizon_count += 1;
-                            if matches!(sender_type_for_log, SenderType::Horizon) {
-                                Some(AllocationId::Horizon(CollectionId::from(*addr)))
-                            } else {
-                                mismatched += 1;
-                                None
-                            }
+                            Some(AllocationId(CollectionId::from(*addr)))
                         }
                     })
                     .collect();
@@ -1096,7 +728,6 @@ impl State {
                     total,
                     legacy = legacy_count,
                     horizon = horizon_count,
-                    mismatched,
                     normalized = set.len(),
                     "Normalized indexer allocations using isLegacy"
                 );
@@ -1129,129 +760,11 @@ impl State {
     }
 }
 
-/// Continuously listens for new receipt notifications from Postgres and forwards them to the
-/// corresponding SenderAccount.
-#[bon::builder]
-async fn new_receipts_watcher(
-    actor_cell: ActorCell,
-    mut pglistener: PgListener,
-    escrow_accounts_rx: Receiver<EscrowAccounts>,
-    sender_type: SenderType,
-    prefix: Option<String>,
-) {
-    match sender_type {
-        SenderType::Legacy => {
-            pglistener
-                .listen("scalar_tap_receipt_notification")
-                .await
-                .expect(
-                    "should be able to subscribe to Postgres Notify events on the channel \
-                'scalar_tap_receipt_notification'",
-                );
-        }
-        SenderType::Horizon => {
-            pglistener
-                .listen("tap_horizon_receipt_notification")
-                .await
-                .expect(
-                    "should be able to subscribe to Postgres Notify events on the channel \
-                'tap_horizon_receipt_notification'",
-                );
-        }
-    }
-
-    tracing::info!(
-        "New receipts watcher started and listening for notifications, sender_type: {:?}, prefix: {:?}",
-        sender_type, prefix
-    );
-
-    loop {
-        tracing::debug!("Waiting for notification from pglistener...");
-
-        let Ok(pg_notification) = pglistener.recv().await else {
-            tracing::error!(
-                "should be able to receive Postgres Notify events on the channel \
-                'scalar_tap_receipt_notification'/'tap_horizon_receipt_notification'"
-            );
-            break;
-        };
-
-        tracing::info!(
-            channel = pg_notification.channel(),
-            payload = pg_notification.payload(),
-            "Received notification from database"
-        );
-        // Determine notification format based on the channel name
-        let new_receipt_notification = match pg_notification.channel() {
-            "scalar_tap_receipt_notification" => {
-                // V1 notification format
-                match serde_json::from_str::<NewReceiptNotificationV1>(pg_notification.payload()) {
-                    Ok(v1_notif) => NewReceiptNotification::V1(v1_notif),
-                    Err(e) => {
-                        tracing::error!(
-                            error = %e,
-                            payload = pg_notification.payload(),
-                            "Failed to deserialize V1 notification payload",
-                        );
-                        break;
-                    }
-                }
-            }
-            "tap_horizon_receipt_notification" => {
-                // V2 notification format
-                match serde_json::from_str::<NewReceiptNotificationV2>(pg_notification.payload()) {
-                    Ok(v2_notif) => NewReceiptNotification::V2(v2_notif),
-                    Err(e) => {
-                        tracing::error!(
-                            error = %e,
-                            payload = pg_notification.payload(),
-                            "Failed to deserialize V2 notification payload",
-                        );
-                        break;
-                    }
-                }
-            }
-            unknown_channel => {
-                tracing::error!(channel = %unknown_channel, "Received notification from unknown channel");
-                break;
-            }
-        };
-        match handle_notification(
-            new_receipt_notification,
-            escrow_accounts_rx.clone(),
-            sender_type,
-            prefix.as_deref(),
-        )
-        .await
-        {
-            Ok(()) => {
-                tracing::debug!(
-                    event = "notification_handled",
-                    "Successfully handled notification"
-                );
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "Error handling notification");
-            }
-        }
-    }
-    // shutdown the whole system
-    actor_cell
-        .kill_and_wait(None)
-        .await
-        .expect("Failed to kill manager.");
-    tracing::error!("Manager killed");
-}
-
 /// Continuously listens for receipt notifications from a tokio channel and forwards them to the
 /// corresponding SenderAccount.
-///
-/// This is used in the unified binary where the service sends notifications directly
-/// through a channel after storing receipts, avoiding the pg_notify round-trip.
 async fn channel_receipts_watcher(
     actor_cell: ActorCell,
     mut rx: tokio::sync::mpsc::Receiver<ChannelReceiptNotification>,
-    escrow_accounts_v1: Receiver<EscrowAccounts>,
     escrow_accounts_v2: Receiver<EscrowAccounts>,
     prefix: Option<String>,
 ) {
@@ -1263,26 +776,17 @@ async fn channel_receipts_watcher(
     while let Some(notification) = rx.recv().await {
         let ChannelReceiptNotification {
             notification: receipt_notification,
-            sender_type,
         } = notification;
 
         tracing::debug!(
-            sender_type = ?sender_type,
             receipt_id = receipt_notification.id(),
             value = receipt_notification.value(),
             "Received receipt notification from channel"
         );
 
-        // Select the correct escrow accounts based on sender type
-        let escrow_accounts_rx = match sender_type {
-            SenderType::Legacy => escrow_accounts_v1.clone(),
-            SenderType::Horizon => escrow_accounts_v2.clone(),
-        };
-
         match handle_notification(
             receipt_notification,
-            escrow_accounts_rx,
-            sender_type,
+            escrow_accounts_v2.clone(),
             prefix.as_deref(),
         )
         .await
@@ -1328,13 +832,11 @@ async fn channel_receipts_watcher(
     fields(
         sender_address = %new_receipt_notification.signer_address(),
         allocation_id = %new_receipt_notification.allocation_id(),
-        sender_type = ?sender_type,
     )
 )]
 async fn handle_notification(
     new_receipt_notification: NewReceiptNotification,
     escrow_accounts_rx: Receiver<EscrowAccounts>,
-    sender_type: SenderType,
     prefix: Option<&str>,
 ) -> anyhow::Result<()> {
     tracing::trace!(
@@ -1342,10 +844,7 @@ async fn handle_notification(
         "New receipt notification detected!"
     );
     let escrow_accounts = escrow_accounts_rx.borrow();
-    let sender_type_str = match sender_type {
-        SenderType::Legacy => "V1",
-        SenderType::Horizon => "V2",
-    };
+    let sender_type_str = "V2";
 
     let signer = new_receipt_notification.signer_address();
     tracing::debug!(
@@ -1364,7 +863,7 @@ async fn handle_notification(
         // TODO: save the receipt in the failed receipts table?
         bail!(
             "No sender address found for receipt signer address {} in {} escrow accounts. \
-                    This suggests either: (1) escrow accounts not yet loaded, (2) signer not authorized, or (3) wrong escrow account type (V1 vs V2).",
+                    This suggests either: (1) escrow accounts not yet loaded or (2) signer not authorized.",
             signer,
             sender_type_str,
         );
@@ -1372,26 +871,13 @@ async fn handle_notification(
 
     let allocation_id = new_receipt_notification.allocation_id();
     let allocation_str = allocation_id.to_hex();
-    match allocation_id {
-        AllocationId::Legacy(_) => {
-            tracing::info!(
-                sender_address = %sender_address,
-                allocation_id = allocation_str,
-                sender_type = sender_type_str,
-                receipt_value = %new_receipt_notification.value(),
-                "Processing receipt notification",
-            );
-        }
-        AllocationId::Horizon(collection_id) => {
-            tracing::info!(
-                sender_address = %sender_address,
-                collection_id = %collection_id,
-                sender_type = sender_type_str,
-                receipt_value = %new_receipt_notification.value(),
-                "Processing receipt notification",
-            );
-        }
-    }
+    tracing::info!(
+        sender_address = %sender_address,
+        collection_id = %allocation_str,
+        sender_type = sender_type_str,
+        receipt_value = %new_receipt_notification.value(),
+        "Processing receipt notification",
+    );
 
     // For actor lookup, use the address format that matches how actors are created
     // "0x...."
@@ -1410,7 +896,6 @@ async fn handle_notification(
     tracing::debug!(
         actor_name,
         allocation_id = %allocation_id,
-        variant = %match allocation_id { AllocationId::Legacy(_) => "Legacy", AllocationId::Horizon(_) => "Horizon" },
         "Looking for SenderAllocation actor",
     );
 
@@ -1422,10 +907,7 @@ async fn handle_notification(
                 receipt notification. Starting a new sender_allocation.",
         );
 
-        let type_segment = match sender_type {
-            SenderType::Legacy => "legacy:",
-            SenderType::Horizon => "horizon:",
-        };
+        let type_segment = "horizon:";
 
         let sender_account_name = format!(
             "{}{}{sender_address}",
@@ -1490,18 +972,18 @@ mod tests {
     use ractor::{Actor, ActorRef, ActorStatus};
     use reqwest::Url;
     use ruint::aliases::U256;
-    use sqlx::{postgres::PgListener, PgPool};
+    use sqlx::PgPool;
     use test_assets::{
         assert_while_retry, flush_messages, TAP_SENDER as SENDER, TAP_SIGNER as SIGNER,
     };
-    use thegraph_core::alloy::hex::ToHexExt;
+    use thegraph_core::{alloy::hex::ToHexExt, CollectionId};
     use tokio::sync::{
         mpsc::{self, error::TryRecvError},
         watch,
     };
 
     use super::{
-        new_receipts_watcher, NewReceiptNotification, NewReceiptNotificationV1,
+        channel_receipts_watcher, ChannelReceiptNotification, NewReceiptNotification,
         SenderAccountsManagerMessage, State,
     };
     use crate::{
@@ -1509,10 +991,11 @@ mod tests {
             sender_account::SenderAccountMessage,
             sender_accounts_manager::{handle_notification, SenderType},
         },
+        tap::TapReceipt,
         test::{
             actors::{DummyActor, MockSenderAccount, MockSenderAllocation, TestableActor},
-            create_rav, create_received_receipt, create_sender_accounts_manager,
-            generate_random_prefix, get_grpc_url, get_sender_account_config, store_rav,
+            create_rav_v2, create_received_receipt, create_sender_accounts_manager,
+            generate_random_prefix, get_grpc_url, get_sender_account_config, store_rav_v2,
             store_receipt, ALLOCATION_ID_0, ALLOCATION_ID_1, INDEXER, SENDER_2,
             TAP_EIP712_DOMAIN_SEPARATOR_V2,
         },
@@ -1553,7 +1036,7 @@ mod tests {
     async fn test_create_sender_accounts_manager() {
         let test_db = test_assets::setup_shared_test_db().await;
         let pgpool = test_db.pool;
-        let (_, _, (actor, join_handle)) =
+        let (_, _, (actor, join_handle), _notification_tx) =
             create_sender_accounts_manager().pgpool(pgpool).call().await;
         actor.stop_and_wait(None, None).await.unwrap();
         join_handle.await.unwrap();
@@ -1570,14 +1053,10 @@ mod tests {
             State {
                 config,
                 domain_separator_v2: TAP_EIP712_DOMAIN_SEPARATOR_V2.clone(),
-                sender_ids_v1: HashSet::new(),
                 sender_ids_v2: HashSet::new(),
-                new_receipts_watcher_handle_v1: None,
-                new_receipts_watcher_handle_v2: None,
                 channel_receipts_watcher_handle: None,
                 pgpool,
                 indexer_allocations: watch::channel(HashMap::new()).1,
-                escrow_accounts_v1: watch::channel(escrow_accounts.clone()).1,
                 escrow_accounts_v2: watch::channel(escrow_accounts).1,
                 escrow_subgraph: get_subgraph_client().await,
                 network_subgraph: get_subgraph_client().await,
@@ -1595,18 +1074,19 @@ mod tests {
         let test_db = test_assets::setup_shared_test_db().await;
         let pgpool = test_db.pool;
         let (_, state) = create_state(pgpool.clone()).await;
-        // add receipts to the database
+        // add receipts to the database (stored in tap_horizon_receipts)
         for i in 1..=10 {
             let receipt = create_received_receipt(&ALLOCATION_ID_0, &SIGNER.0, i, i, i.into());
             store_receipt(&pgpool, receipt.signed_receipt())
                 .await
                 .unwrap();
         }
-        // add non-final ravs
-        let signed_rav = create_rav(ALLOCATION_ID_1, SIGNER.0.clone(), 4, 10);
-        store_rav(&pgpool, signed_rav, SENDER.1).await.unwrap();
+        // add non-final ravs (stored in tap_horizon_ravs)
+        let collection_id_1 = *CollectionId::from(ALLOCATION_ID_1);
+        let signed_rav = create_rav_v2(collection_id_1, SIGNER.0.clone(), 4, 10);
+        store_rav_v2(&pgpool, signed_rav, SENDER.1).await.unwrap();
 
-        let pending_allocation_id = state.get_pending_sender_allocation_id_v1().await;
+        let pending_allocation_id = state.get_pending_sender_allocation_id_v2().await;
 
         // check if pending allocations are correct
         assert_eq!(pending_allocation_id.len(), 1);
@@ -1618,11 +1098,11 @@ mod tests {
     async fn test_update_sender_account() {
         let test_db = test_assets::setup_shared_test_db().await;
         let pgpool = test_db.pool;
-        let (prefix, mut notify, (actor, join_handle)) =
+        let (prefix, mut notify, (actor, join_handle), _notification_tx) =
             create_sender_accounts_manager().pgpool(pgpool).call().await;
 
         actor
-            .cast(SenderAccountsManagerMessage::UpdateSenderAccountsV1(
+            .cast(SenderAccountsManagerMessage::UpdateSenderAccountsV2(
                 vec![SENDER.1].into_iter().collect(),
             ))
             .unwrap();
@@ -1631,7 +1111,7 @@ mod tests {
 
         assert_while_retry! {
             ActorRef::<SenderAccountMessage>::where_is(format!(
-                "{}:legacy:{}",
+                "{}:horizon:{}",
                 prefix.clone(),
                 SENDER.1
             )).is_none()
@@ -1639,14 +1119,14 @@ mod tests {
 
         // verify if create sender account
         let sender_ref = ActorRef::<SenderAccountMessage>::where_is(format!(
-            "{}:legacy:{}",
+            "{}:horizon:{}",
             prefix.clone(),
             SENDER.1
         ))
         .unwrap();
 
         actor
-            .cast(SenderAccountsManagerMessage::UpdateSenderAccountsV1(
+            .cast(SenderAccountsManagerMessage::UpdateSenderAccountsV2(
                 HashSet::new(),
             ))
             .unwrap();
@@ -1675,13 +1155,13 @@ mod tests {
                 supervisor.get_cell(),
                 SENDER_2.1,
                 HashSet::new(),
-                SenderType::Legacy,
+                SenderType::Horizon,
             )
             .await
             .unwrap();
 
         let actor_ref = ActorRef::<SenderAccountMessage>::where_is(format!(
-            "{}:legacy:{}",
+            "{}:horizon:{}",
             state.prefix, SENDER_2.1
         ));
         assert!(actor_ref.is_some());
@@ -1698,7 +1178,7 @@ mod tests {
                 supervisor.get_cell(),
                 INDEXER.1,
                 HashSet::new(),
-                SenderType::Legacy,
+                SenderType::Horizon,
             )
             .await;
 
@@ -1706,7 +1186,7 @@ mod tests {
             r#"
                 SELECT EXISTS (
                     SELECT 1
-                    FROM scalar_tap_denylist
+                    FROM tap_horizon_denylist
                     WHERE sender_address = $1
                 ) as denied
             "#,
@@ -1744,14 +1224,7 @@ mod tests {
         .await
         .unwrap();
 
-        let mut pglistener = PgListener::connect_with(&pgpool.clone()).await.unwrap();
-        pglistener
-            .listen("scalar_tap_receipt_notification")
-            .await
-            .expect(
-                "should be able to subscribe to Postgres Notify events on the channel \
-            'scalar_tap_receipt_notification'",
-            );
+        let (notification_tx, notification_rx) = mpsc::channel(10);
 
         let escrow_accounts_rx = watch::channel(EscrowAccounts::new(
             HashMap::from([(SENDER.1, U256::from(1000))]),
@@ -1760,22 +1233,33 @@ mod tests {
         .1;
         let dummy_actor = DummyActor::spawn().await;
 
-        // Start the new_receipts_watcher task that will consume from the `pglistener`
-        let new_receipts_watcher_handle = tokio::spawn(
-            new_receipts_watcher()
-                .actor_cell(dummy_actor.get_cell())
-                .pglistener(pglistener)
-                .escrow_accounts_rx(escrow_accounts_rx)
-                .sender_type(SenderType::Legacy)
-                .prefix(prefix.clone())
-                .call(),
-        );
+        // Start the channel receipts watcher task
+        let channel_receipts_watcher_handle = tokio::spawn(channel_receipts_watcher(
+            dummy_actor.get_cell(),
+            notification_rx,
+            escrow_accounts_rx,
+            Some(prefix.clone()),
+        ));
 
         let receipts_count = 10;
         // add receipts to the database
         for i in 1..=receipts_count {
             let receipt = create_received_receipt(&ALLOCATION_ID_0, &SIGNER.0, i, i, i.into());
-            store_receipt(&pgpool, receipt.signed_receipt())
+            let receipt_id = store_receipt(&pgpool, receipt.signed_receipt())
+                .await
+                .unwrap();
+            let signed_receipt = receipt.signed_receipt();
+            let TapReceipt::V2(signed_receipt) = signed_receipt;
+            notification_tx
+                .send(ChannelReceiptNotification {
+                    notification: NewReceiptNotification {
+                        id: receipt_id,
+                        collection_id: signed_receipt.message.collection_id.encode_hex(),
+                        signer_address: SIGNER.1,
+                        timestamp_ns: signed_receipt.message.timestamp_ns,
+                        value: signed_receipt.message.value,
+                    },
+                })
                 .await
                 .unwrap();
         }
@@ -1789,36 +1273,24 @@ mod tests {
         }
         assert_eq!(receipts.try_recv().unwrap_err(), TryRecvError::Empty);
 
-        new_receipts_watcher_handle.abort();
+        channel_receipts_watcher_handle.abort();
     }
 
     #[tokio::test]
-    async fn test_manager_killed_in_database_connection() {
-        let test_db = test_assets::setup_shared_test_db().await;
-        let pgpool = test_db.pool;
-        let mut pglistener = PgListener::connect_with(&pgpool).await.unwrap();
-        pglistener
-            .listen("scalar_tap_receipt_notification")
-            .await
-            .expect(
-                "should be able to subscribe to Postgres Notify events on the channel \
-                'scalar_tap_receipt_notification'",
-            );
-
+    async fn test_manager_killed_when_channel_closed() {
+        let (notification_tx, notification_rx) = mpsc::channel(1);
         let escrow_accounts_rx = watch::channel(EscrowAccounts::default()).1;
         let dummy_actor = DummyActor::spawn().await;
 
-        // Start the new_receipts_watcher task that will consume from the `pglistener`
-        let new_receipts_watcher_handle = tokio::spawn(
-            new_receipts_watcher()
-                .sender_type(SenderType::Legacy)
-                .actor_cell(dummy_actor.get_cell())
-                .pglistener(pglistener)
-                .escrow_accounts_rx(escrow_accounts_rx)
-                .call(),
-        );
-        pgpool.close().await;
-        new_receipts_watcher_handle.await.unwrap();
+        let channel_receipts_watcher_handle = tokio::spawn(channel_receipts_watcher(
+            dummy_actor.get_cell(),
+            notification_rx,
+            escrow_accounts_rx,
+            None,
+        ));
+
+        drop(notification_tx);
+        channel_receipts_watcher_handle.await.unwrap();
 
         assert_eq!(dummy_actor.get_status(), ActorStatus::Stopped)
     }
@@ -1834,7 +1306,7 @@ mod tests {
         let (last_message_emitted, mut rx) = mpsc::channel(64);
 
         let (sender_account, join_handle) = MockSenderAccount::spawn(
-            Some(format!("{}:legacy:{}", prefix.clone(), SENDER.1,)),
+            Some(format!("{}:horizon:{}", prefix.clone(), SENDER.1,)),
             MockSenderAccount {
                 last_message_emitted,
             },
@@ -1843,22 +1315,17 @@ mod tests {
         .await
         .unwrap();
 
-        let new_receipt_notification = NewReceiptNotification::V1(NewReceiptNotificationV1 {
+        let new_receipt_notification = NewReceiptNotification {
             id: 1,
-            allocation_id: ALLOCATION_ID_0,
+            collection_id: CollectionId::from(ALLOCATION_ID_0).encode_hex(),
             signer_address: SIGNER.1,
             timestamp_ns: 1,
             value: 1,
-        });
+        };
 
-        handle_notification(
-            new_receipt_notification,
-            escrow_accounts,
-            SenderType::Legacy,
-            Some(&prefix),
-        )
-        .await
-        .unwrap();
+        handle_notification(new_receipt_notification, escrow_accounts, Some(&prefix))
+            .await
+            .unwrap();
 
         let new_alloc_msg = rx.recv().await.unwrap();
         insta::assert_debug_snapshot!(new_alloc_msg);

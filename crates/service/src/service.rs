@@ -108,12 +108,6 @@ pub async fn run() -> anyhow::Result<()> {
         );
     }
 
-    let domain_separator = tap_eip712_domain(
-        config.blockchain.chain_id as u64,
-        config.blockchain.receipts_verifier_address,
-        tap_core::TapVersion::V1,
-    );
-
     let domain_separator_v2 = tap_eip712_domain(
         config.blockchain.chain_id as u64,
         if config.tap_mode().is_horizon() {
@@ -129,6 +123,7 @@ pub async fn run() -> anyhow::Result<()> {
         },
         tap_core::TapVersion::V2,
     );
+    let domain_separator = domain_separator_v2.clone();
     let chain_id = config.blockchain.chain_id as u64;
 
     let host_and_port = config.service.host_and_port;
@@ -178,24 +173,6 @@ pub async fn run() -> anyhow::Result<()> {
         false
     };
 
-    // Create escrow subgraph client (used for V1 escrow accounts)
-    let escrow_subgraph_v1 = create_subgraph_client(
-        http_client.clone(),
-        &config.graph_node,
-        &config.subgraphs.escrow.config,
-    )
-    .await;
-
-    // Create V1 escrow watcher (always needed for processing existing receipts)
-    let v1_watcher = indexer_monitor::escrow_accounts_v1(
-        escrow_subgraph_v1,
-        indexer_address,
-        config.subgraphs.escrow.config.syncing_interval_secs,
-        true, // Reject thawing signers eagerly
-    )
-    .await
-    .with_context(|| "Error creating escrow_accounts_v1 channel")?;
-
     // Create V2 escrow watcher if Horizon is active
     let v2_watcher = if is_horizon_active {
         tracing::info!("Horizon contracts detected - creating V2 escrow watcher");
@@ -224,8 +201,7 @@ pub async fn run() -> anyhow::Result<()> {
         None
     };
 
-    // Clone watchers for TAP agent (if it will be enabled)
-    let v1_watcher_for_tap = v1_watcher.clone();
+    // Clone watcher for TAP agent (if it will be enabled)
     let v2_watcher_for_tap = v2_watcher.clone();
 
     // Start TAP agent if enabled in unified binary mode
@@ -253,7 +229,6 @@ pub async fn run() -> anyhow::Result<()> {
             database.clone(),
             network_subgraph,
             escrow_subgraph_for_tap,
-            v1_watcher_for_tap,
             v2_watcher_for_tap_final,
             domain_separator_v2.clone(),
             is_horizon_active,
@@ -270,17 +245,13 @@ pub async fn run() -> anyhow::Result<()> {
             }
         }
     } else {
-        // Drop the unused watchers
-        drop(v1_watcher_for_tap);
         drop(v2_watcher_for_tap);
         None
     };
 
     // Configure router with escrow watchers
     let router = if let Some(v2_watcher) = v2_watcher {
-        tracing::info!(
-            "Horizon migration mode: V2 receipts only, but processing existing V1 receipts"
-        );
+        tracing::info!("Horizon mode: V2 receipts only");
 
         ServiceRouter::builder()
             .database(database.clone())
@@ -294,24 +265,10 @@ pub async fn run() -> anyhow::Result<()> {
             .blockchain(config.blockchain)
             .timestamp_buffer_secs(config.tap.rav_request.timestamp_buffer_secs)
             .network_subgraph(network_subgraph, config.subgraphs.network)
-            .escrow_accounts_v1(v1_watcher)
             .escrow_accounts_v2(v2_watcher)
             .build()
     } else {
-        ServiceRouter::builder()
-            .database(database.clone())
-            .domain_separator(domain_separator.clone())
-            .domain_separator_v2(domain_separator_v2.clone())
-            .graph_node(config.graph_node)
-            .http_client(http_client)
-            .release(release)
-            .indexer(config.indexer)
-            .service(config.service)
-            .blockchain(config.blockchain)
-            .timestamp_buffer_secs(config.tap.rav_request.timestamp_buffer_secs)
-            .network_subgraph(network_subgraph, config.subgraphs.network)
-            .escrow_accounts_v1(v1_watcher)
-            .build()
+        anyhow::bail!("Horizon mode requires V2 escrow accounts watcher");
     };
 
     serve_metrics(config.metrics.get_socket_addr());

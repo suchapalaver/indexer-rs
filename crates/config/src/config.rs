@@ -607,14 +607,14 @@ pub struct TapConfig {
     /// the current subgraph state, ensuring stale allocations are detected and processed
     /// even after connectivity failures.
     ///
-    /// Default: 300 (5 minutes)
+    /// Default: 60 (1 minute)
     #[serde(default = "default_allocation_reconciliation_interval_secs")]
     #[serde_as(as = "DurationSecondsWithFrac<f64>")]
     pub allocation_reconciliation_interval_secs: Duration,
 }
 
 fn default_allocation_reconciliation_interval_secs() -> Duration {
-    Duration::from_secs(300)
+    Duration::from_secs(60)
 }
 
 #[derive(Debug, Deserialize)]

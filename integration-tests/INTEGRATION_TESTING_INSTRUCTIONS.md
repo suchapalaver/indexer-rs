@@ -279,7 +279,6 @@ docker exec chain cast block-number --rpc-url http://localhost:8545
 
 ```bash
 # Check for TAP receipts
-docker exec postgres psql -U postgres -d indexer_components_1 -c "SELECT COUNT(*) FROM scalar_tap_receipts;"
 docker exec postgres psql -U postgres -d indexer_components_1 -c "SELECT COUNT(*) FROM tap_horizon_receipts;"
 ```
 
@@ -298,10 +297,9 @@ just reload
 **Verify notification listeners**:
 
 ```bash
-# Check that both notification channels are being listened to
+# Check that the notification channel is being listened to
 docker logs tap-agent 2>&1 | grep "LISTEN"
 # Should show:
-# LISTEN "scalar_tap_receipt_notification"      (V1/Legacy)
 # LISTEN "tap_horizon_receipt_notification"     (V2/Horizon)
 ```
 
@@ -403,7 +401,6 @@ docker exec postgres psql -U postgres -d indexer_components_1 -c "SELECT tgname,
 ```bash
 # If malformed data causes issues, clear and restart
 docker exec postgres psql -U postgres -d indexer_components_1 -c "TRUNCATE tap_horizon_receipts CASCADE;"
-docker exec postgres psql -U postgres -d indexer_components_1 -c "TRUNCATE scalar_tap_receipts CASCADE;"
 just reload
 ```
 
@@ -418,5 +415,5 @@ just reload
 ### Key Files for TAP Processing
 
 - `crates/tap-agent/src/agent/sender_accounts_manager.rs`: Notification handling
-- Database triggers: `tap_horizon_receipt_notify()` and `scalar_tap_receipt_notify()`
+- Database triggers: `tap_horizon_receipt_notify()`
 - Metrics endpoint: <http://localhost:7300/metrics>

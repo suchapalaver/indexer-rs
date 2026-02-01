@@ -282,6 +282,8 @@ pub enum SenderAllocationMessage {
     ///
     /// It notifies its parent with the response
     TriggerRavRequest,
+    /// Recalculate unaggregated fees from the database (outage recovery)
+    ReconcileUnaggregatedFees,
     #[cfg(any(test, feature = "test"))]
     /// Return the internal state (used for tests)
     GetUnaggregatedReceipts(
@@ -326,6 +328,20 @@ where
                 T::to_allocation_id_enum(&allocation_id),
                 state.invalid_receipts_fees,
             ))?;
+        }
+
+        if let Ok(unaggregated) = state.recalculate_all_unaggregated_fees().await {
+            state.unaggregated_fees = unaggregated;
+            sender_account_ref.cast(SenderAccountMessage::UpdateReceiptFees(
+                T::to_allocation_id_enum(&allocation_id),
+                ReceiptFees::UpdateValue(unaggregated),
+            ))?;
+        } else {
+            tracing::warn!(
+                sender = %state.sender,
+                allocation_id = %state.allocation_id,
+                "Failed to recalculate unaggregated fees on startup"
+            );
         }
 
         // update unaggregated_fees
@@ -478,6 +494,27 @@ where
                             rav_result.map(|res| res.map(Into::into)),
                         ),
                     ))?;
+            }
+            SenderAllocationMessage::ReconcileUnaggregatedFees => {
+                match state.recalculate_all_unaggregated_fees().await {
+                    Ok(unaggregated) => {
+                        state.unaggregated_fees = unaggregated;
+                        state
+                            .sender_account_ref
+                            .cast(SenderAccountMessage::UpdateReceiptFees(
+                                T::to_allocation_id_enum(&state.allocation_id),
+                                ReceiptFees::UpdateValue(unaggregated),
+                            ))?;
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            sender = %state.sender,
+                            allocation_id = %state.allocation_id,
+                            "Failed to reconcile unaggregated fees"
+                        );
+                    }
+                }
             }
             #[cfg(any(test, feature = "test"))]
             SenderAllocationMessage::GetUnaggregatedReceipts(reply) => {
@@ -783,7 +820,6 @@ where
             }
             (Err(AggregationError::NoValidReceiptsForRavRequest), true, true) => {
                 let table_name = match std::any::type_name::<T>() {
-                    name if name.contains("Legacy") => "scalar_tap_receipts (V1/Legacy)",
                     name if name.contains("Horizon") => "tap_horizon_receipts (V2/Horizon)",
                     _ => "unknown receipt table",
                 };
@@ -947,25 +983,32 @@ where
         rav: &Eip712SignedMessage<T::Rav>,
         reason: &str,
     ) -> anyhow::Result<()> {
-        // Failed Ravs are stored as json, we don't need to have a copy of the table
-        // TODO update table name?
-        sqlx::query!(
+        // Failed RAVs are stored as json for debugging in Horizon-only mode.
+        sqlx::query(
             r#"
-                INSERT INTO scalar_tap_rav_requests_failed (
-                    allocation_id,
-                    sender_address,
+                INSERT INTO tap_horizon_rav_requests_failed (
+                    collection_id,
+                    payer,
+                    data_service,
+                    service_provider,
                     expected_rav,
                     rav_response,
                     reason
                 )
-                VALUES ($1, $2, $3, $4, $5)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
             "#,
-            T::allocation_id_to_address(&self.allocation_id).encode_hex(),
-            self.sender.encode_hex(),
-            serde_json::to_value(expected_rav)?,
-            serde_json::to_value(rav)?,
-            reason
         )
+        .bind(T::allocation_id_to_address(&self.allocation_id).encode_hex())
+        .bind(self.sender.encode_hex())
+        .bind(
+            self.data_service
+                .expect("Horizon requires data_service to be set")
+                .encode_hex(),
+        )
+        .bind(self.indexer_address.encode_hex())
+        .bind(serde_json::to_value(expected_rav)?)
+        .bind(serde_json::to_value(rav)?)
+        .bind(reason)
         .execute(&self.pgpool)
         .await
         .map_err(|e| anyhow!("Failed to store failed RAV: {:?}", e))?;
@@ -1238,7 +1281,10 @@ pub mod tests {
         flush_messages, ALLOCATION_ID_0, TAP_EIP712_DOMAIN as TAP_EIP712_DOMAIN_SEPARATOR,
         TAP_SENDER as SENDER, TAP_SIGNER as SIGNER,
     };
-    use thegraph_core::{alloy::primitives::Address, CollectionId};
+    use thegraph_core::{
+        alloy::{hex::ToHexExt, primitives::Address},
+        CollectionId,
+    };
     use tokio::sync::{mpsc, watch};
     use tonic::{transport::Endpoint, Code};
     use wiremock::{
@@ -1253,9 +1299,7 @@ pub mod tests {
     use crate::{
         agent::{
             sender_account::{ReceiptFees, SenderAccountMessage},
-            sender_accounts_manager::{
-                AllocationId, NewReceiptNotification, NewReceiptNotificationV1,
-            },
+            sender_accounts_manager::{AllocationId, NewReceiptNotification},
             sender_allocation::DatabaseInteractions,
         },
         tap::{context::Horizon, CheckingReceipt},
@@ -1521,15 +1565,13 @@ pub mod tests {
         // should validate with id less than last_id
         cast!(
             sender_allocation,
-            SenderAllocationMessage::NewReceipt(NewReceiptNotification::V1(
-                NewReceiptNotificationV1 {
-                    id: 0,
-                    value: 10,
-                    allocation_id: ALLOCATION_ID_0,
-                    signer_address: SIGNER.1,
-                    timestamp_ns: 0,
-                }
-            ))
+            SenderAllocationMessage::NewReceipt(NewReceiptNotification {
+                id: 0,
+                value: 10,
+                collection_id: CollectionId::from(ALLOCATION_ID_0).encode_hex(),
+                signer_address: SIGNER.1,
+                timestamp_ns: 0,
+            })
         )
         .unwrap();
 
@@ -1540,15 +1582,13 @@ pub mod tests {
 
         cast!(
             sender_allocation,
-            SenderAllocationMessage::NewReceipt(NewReceiptNotification::V1(
-                NewReceiptNotificationV1 {
-                    id: 1,
-                    value: 20,
-                    allocation_id: ALLOCATION_ID_0,
-                    signer_address: SIGNER.1,
-                    timestamp_ns,
-                }
-            ))
+            SenderAllocationMessage::NewReceipt(NewReceiptNotification {
+                id: 1,
+                value: 20,
+                collection_id: CollectionId::from(ALLOCATION_ID_0).encode_hex(),
+                signer_address: SIGNER.1,
+                timestamp_ns,
+            })
         )
         .unwrap();
 
@@ -1558,12 +1598,19 @@ pub mod tests {
         let startup_load_msg = message_receiver.recv().await.unwrap();
         insta::assert_debug_snapshot!(startup_load_msg);
 
-        let last_message_emitted = message_receiver.recv().await.unwrap();
         let expected_message = SenderAccountMessage::UpdateReceiptFees(
-            AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_0)),
+            AllocationId(CollectionId::from(ALLOCATION_ID_0)),
             ReceiptFees::NewReceipt(20u128, timestamp_ns),
         );
-        assert_eq!(last_message_emitted, expected_message);
+        let mut found = false;
+        for _ in 0..2 {
+            let message = message_receiver.recv().await.unwrap();
+            if message == expected_message {
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "Expected NewReceipt message not found");
     }
 
     #[tokio::test]
@@ -1753,7 +1800,7 @@ pub mod tests {
 
     // used for test_close_allocation_with_pending_fees(pgpool:
     mod wiremock_gen {
-        wiremock_grpc::generate!("tap_aggregator.v1.TapAggregator", MockTapAggregator);
+        wiremock_grpc::generate!("tap_aggregator.v2.TapAggregator", MockTapAggregator);
     }
 
     #[test_log::test(tokio::test)]
@@ -1801,7 +1848,7 @@ pub mod tests {
                 .unwrap();
         }
 
-        let (_, sender_account) = create_mock_sender_account().await;
+        let (_message_receiver, sender_account) = create_mock_sender_account().await;
 
         // create allocation
         let (sender_allocation, _notify) = create_sender_allocation()
@@ -2104,29 +2151,23 @@ pub mod tests {
         let rav_error_response_message = message_receiver.recv().await.unwrap();
         insta::assert_debug_snapshot!(rav_error_response_message);
 
-        let invalid_receipts = sqlx::query!(
-            r#"
-                SELECT * FROM scalar_tap_receipts_invalid;
-            "#,
-        )
-        .fetch_all(&pgpool)
-        .await
-        .expect("Should not fail to fetch from scalar_tap_receipts_invalid");
+        let invalid_receipt_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM tap_horizon_receipts_invalid")
+                .fetch_one(&pgpool)
+                .await
+                .expect("Should not fail to count tap_horizon_receipts_invalid");
 
         // Invalid receipts should be found inside the table
-        assert_eq!(invalid_receipts.len(), 10);
+        assert_eq!(invalid_receipt_count, 10);
 
-        // make sure scalar_tap_receipts gets emptied
-        let all_receipts = sqlx::query!(
-            r#"
-                SELECT * FROM scalar_tap_receipts;
-            "#,
-        )
-        .fetch_all(&pgpool)
-        .await
-        .expect("Should not fail to fetch from scalar_tap_receipts");
+        // make sure tap_horizon_receipts gets emptied
+        let all_receipt_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM tap_horizon_receipts")
+                .fetch_one(&pgpool)
+                .await
+                .expect("Should not fail to count tap_horizon_receipts");
 
-        // Invalid receipts should be found inside the table
-        assert!(all_receipts.is_empty());
+        // All receipts should have been moved to invalid
+        assert_eq!(all_receipt_count, 0);
     }
 }

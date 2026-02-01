@@ -116,7 +116,7 @@ impl DenyListCheck {
                 pg_notification = pglistener.recv() => {
                     let pg_notification = pg_notification.expect(
                     "should be able to receive Postgres Notify events on the channel \
-                    'scalar_tap_deny_notification'",
+                    'tap_horizon_deny_notification'",
                     );
 
                     let denylist_notification: DenylistNotification =

@@ -99,7 +99,7 @@ impl NetworkVersion for Horizon {
     fn to_allocation_id_enum(
         id: &Self::AllocationId,
     ) -> crate::agent::sender_accounts_manager::AllocationId {
-        crate::agent::sender_accounts_manager::AllocationId::Horizon(*id)
+        crate::agent::sender_accounts_manager::AllocationId(*id)
     }
 
     async fn aggregate(
