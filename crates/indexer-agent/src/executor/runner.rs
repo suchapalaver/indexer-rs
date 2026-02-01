@@ -484,9 +484,17 @@ impl ActionExecutor {
                 .parse()
                 .map_err(|e| ExecutorError::TransactionBuild(format!("invalid POI: {e}")))?;
 
-            let block_number: BlockNumber = action
-                .poi_block_number
-                .unwrap_or(0)
+            let Some(block_number_raw) = action.poi_block_number else {
+                return Err(ExecutorError::TransactionBuild(
+                    "missing POI block number".into(),
+                ));
+            };
+            if block_number_raw <= 0 {
+                return Err(ExecutorError::TransactionBuild(
+                    "invalid POI block number".into(),
+                ));
+            }
+            let block_number: BlockNumber = block_number_raw
                 .try_into()
                 .map_err(|_| ExecutorError::TransactionBuild("invalid POI block number".into()))?;
 
