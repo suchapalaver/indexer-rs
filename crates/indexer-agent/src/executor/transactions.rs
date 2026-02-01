@@ -9,7 +9,7 @@
 //! - Reallocating (close existing + open new)
 
 use alloy::{
-    primitives::{Address, Bytes, FixedBytes, U256},
+    primitives::{Address, BlockNumber, Bytes, FixedBytes, U256},
     sol,
     sol_types::{SolCall, SolValue},
 };
@@ -104,7 +104,7 @@ pub fn encode_collect_indexing_rewards_data(
 /// * `public_poi` - Optional public POI (bytes32)
 /// * `indexing_status` - Optional indexing status string
 pub fn encode_poi_metadata(
-    block_number: u64,
+    block_number: BlockNumber,
     public_poi: Option<FixedBytes<32>>,
     indexing_status: Option<&str>,
 ) -> Bytes {
@@ -174,7 +174,7 @@ pub fn build_unallocate_tx(
     indexer: Address,
     allocation_id: Address,
     poi: FixedBytes<32>,
-    poi_block_number: u64,
+    poi_block_number: BlockNumber,
     public_poi: Option<FixedBytes<32>>,
     is_over_allocated: bool,
 ) -> Bytes {
@@ -224,7 +224,7 @@ pub struct ReallocateParams {
     /// Proof of Indexing for the old allocation
     pub poi: FixedBytes<32>,
     /// The block number for the Proof of Indexing (POI)
-    pub poi_block_number: u64,
+    pub poi_block_number: BlockNumber,
     /// The deployment ID (same as old allocation)
     pub subgraph_deployment_id: FixedBytes<32>,
     /// Amount of GRT for the new allocation
@@ -345,7 +345,14 @@ mod tests {
         let allocation_id = Address::ZERO;
         let poi = FixedBytes::ZERO;
 
-        let tx = build_unallocate_tx(indexer, allocation_id, poi, 0, None, true);
+        let tx = build_unallocate_tx(
+            indexer,
+            allocation_id,
+            poi,
+            BlockNumber::from(0u64),
+            None,
+            true,
+        );
         assert!(!tx.is_empty());
     }
 
@@ -355,7 +362,14 @@ mod tests {
         let allocation_id = Address::ZERO;
         let poi = FixedBytes::ZERO;
 
-        let tx = build_unallocate_tx(indexer, allocation_id, poi, 0, None, false);
+        let tx = build_unallocate_tx(
+            indexer,
+            allocation_id,
+            poi,
+            BlockNumber::from(0u64),
+            None,
+            false,
+        );
         // Should be a multicall with collect + stopService
         assert!(!tx.is_empty());
     }

@@ -10,7 +10,7 @@ use std::{
 
 use alloy::{
     network::TransactionBuilder,
-    primitives::{Address, Bytes, FixedBytes, U256},
+    primitives::{Address, BlockNumber, Bytes, FixedBytes, U256},
     providers::Provider,
     rpc::types::TransactionRequest,
     signers::{local::PrivateKeySigner, Signer},
@@ -477,14 +477,18 @@ impl ActionExecutor {
         &self,
         action: &Action,
         deployment: &DeploymentId,
-    ) -> Result<(FixedBytes<32>, u64, Option<FixedBytes<32>>), ExecutorError> {
+    ) -> Result<(FixedBytes<32>, BlockNumber, Option<FixedBytes<32>>), ExecutorError> {
         // Case 1: Explicit POI provided in action (from Management API or manual queue)
         if let Some(poi_str) = &action.poi {
             let poi: FixedBytes<32> = poi_str
                 .parse()
                 .map_err(|e| ExecutorError::TransactionBuild(format!("invalid POI: {e}")))?;
 
-            let block_number = action.poi_block_number.unwrap_or(0) as u64;
+            let block_number: BlockNumber = action
+                .poi_block_number
+                .unwrap_or(0)
+                .try_into()
+                .map_err(|_| ExecutorError::TransactionBuild("invalid POI block number".into()))?;
 
             // Parse public_poi if provided
             let public_poi = if let Some(public_poi_str) = &action.public_poi {
@@ -512,7 +516,7 @@ impl ActionExecutor {
                 deployment = %deployment,
                 "Force closing allocation with zero POI - indexing rewards will be forfeited"
             );
-            return Ok((FixedBytes::ZERO, 0, None));
+            return Ok((FixedBytes::ZERO, BlockNumber::from(0u64), None));
         }
 
         // Case 3: Resolve POI from graph-node

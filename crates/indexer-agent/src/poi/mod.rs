@@ -14,7 +14,7 @@
 //! let poi_result = poi_resolver.resolve_poi(&deployment_id, block_number).await?;
 //! ```
 
-use alloy::primitives::FixedBytes;
+use alloy::primitives::{BlockNumber, FixedBytes};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use thegraph_core::DeploymentId;
@@ -29,7 +29,7 @@ pub struct PoiResult {
     /// The deployment ID
     pub deployment: String,
     /// The block number for the POI
-    pub block_number: u64,
+    pub block_number: BlockNumber,
     /// The public POI hash (bytes32)
     pub public_poi: FixedBytes<32>,
 }
@@ -49,7 +49,7 @@ pub enum PoiError {
     #[error("POI not found for deployment {deployment} at block {block_number}")]
     NotFound {
         deployment: String,
-        block_number: u64,
+        block_number: BlockNumber,
     },
 
     /// Failed to parse POI response
@@ -62,8 +62,8 @@ pub enum PoiError {
     )]
     NotSynced {
         deployment: String,
-        block_number: u64,
-        latest_block: u64,
+        block_number: BlockNumber,
+        latest_block: BlockNumber,
     },
 }
 
@@ -185,7 +185,10 @@ impl PoiResolver {
     ///
     /// This queries the indexingStatuses endpoint to find the latest block
     /// that has been indexed for the given deployment.
-    pub async fn get_latest_block(&self, deployment: &DeploymentId) -> Result<u64, PoiError> {
+    pub async fn get_latest_block(
+        &self,
+        deployment: &DeploymentId,
+    ) -> Result<BlockNumber, PoiError> {
         let deployment_str = deployment.to_string();
 
         let request = IndexingStatusRequest {
@@ -232,7 +235,7 @@ impl PoiResolver {
             .find(|s| s.subgraph == deployment_str)
             .ok_or_else(|| PoiError::NotFound {
                 deployment: deployment_str.clone(),
-                block_number: 0,
+                block_number: BlockNumber::from(0u64),
             })?;
 
         // Get the latest block from the first chain (there's typically only one)
@@ -242,10 +245,10 @@ impl PoiResolver {
             .and_then(|c| c.latest_block.as_ref())
             .ok_or_else(|| PoiError::NotFound {
                 deployment: deployment_str.clone(),
-                block_number: 0,
+                block_number: BlockNumber::from(0u64),
             })?;
 
-        let block_number: u64 = latest_block
+        let block_number: BlockNumber = latest_block
             .number
             .parse()
             .map_err(|e| PoiError::ParseError(format!("invalid block number: {e}")))?;
@@ -274,7 +277,7 @@ impl PoiResolver {
     pub async fn resolve_poi(
         &self,
         deployment: &DeploymentId,
-        block_number: u64,
+        block_number: BlockNumber,
     ) -> Result<PoiResult, PoiError> {
         let deployment_str = deployment.to_string();
 
@@ -342,7 +345,7 @@ impl PoiResolver {
             .map_err(|e| PoiError::ParseError(format!("invalid POI hash: {e}")))?;
 
         // Parse the block number from response
-        let response_block: u64 = poi_result
+        let response_block: BlockNumber = poi_result
             .block
             .number
             .parse()
@@ -422,11 +425,11 @@ mod tests {
     fn test_poi_result_creation() {
         let poi = PoiResult {
             deployment: "QmSWxvd8SaQK6qZKJ7xtfxCCGoRzGnoi2WNzmJYYJW9BXY".to_string(),
-            block_number: 12345678,
+            block_number: BlockNumber::from(12_345_678u64),
             public_poi: FixedBytes::ZERO,
         };
 
-        assert_eq!(poi.block_number, 12345678);
+        assert_eq!(poi.block_number, BlockNumber::from(12_345_678u64));
         assert_eq!(poi.public_poi, FixedBytes::ZERO);
     }
 
@@ -434,15 +437,15 @@ mod tests {
     fn test_poi_error_messages() {
         let err = PoiError::NotFound {
             deployment: "QmTest".to_string(),
-            block_number: 100,
+            block_number: BlockNumber::from(100u64),
         };
         assert!(err.to_string().contains("QmTest"));
         assert!(err.to_string().contains("100"));
 
         let err = PoiError::NotSynced {
             deployment: "QmTest".to_string(),
-            block_number: 200,
-            latest_block: 100,
+            block_number: BlockNumber::from(200u64),
+            latest_block: BlockNumber::from(100u64),
         };
         assert!(err.to_string().contains("not synced"));
         assert!(err.to_string().contains("200"));
