@@ -174,6 +174,9 @@ impl Action {
             &input.protocol_network,
             input.allocation_id.as_deref(),
             input.amount.as_deref(),
+            input.poi.as_deref(),
+            input.public_poi.as_deref(),
+            input.poi_block_number,
             input.is_legacy,
         )?;
 

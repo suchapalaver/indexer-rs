@@ -41,7 +41,7 @@ sol! {
         bytes metadata;
     }
 
-    /// POI metadata structure
+    /// Proof of Indexing (POI) metadata structure
     struct POIMetadata {
         uint256 blockNumber;
         bytes32 publicPoi;
@@ -97,7 +97,7 @@ pub fn encode_collect_indexing_rewards_data(
     data.abi_encode().into()
 }
 
-/// Encode POI metadata.
+/// Encode Proof of Indexing (POI) metadata.
 ///
 /// # Arguments
 /// * `block_number` - The block number for the POI
@@ -223,7 +223,7 @@ pub struct ReallocateParams {
     pub old_allocation_id: Address,
     /// Proof of Indexing for the old allocation
     pub poi: FixedBytes<32>,
-    /// The block number for the POI
+    /// The block number for the Proof of Indexing (POI)
     pub poi_block_number: u64,
     /// The deployment ID (same as old allocation)
     pub subgraph_deployment_id: FixedBytes<32>,

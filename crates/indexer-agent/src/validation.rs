@@ -52,6 +52,14 @@ pub enum ValidationError {
     /// Invalid allocation ID format.
     #[error("invalid allocation ID '{0}': expected 0x-prefixed 40-character hex address")]
     InvalidAllocationId(String),
+
+    /// Invalid POI format.
+    #[error("invalid POI '{0}': expected 0x-prefixed 32-byte hex")]
+    InvalidPoi(String),
+
+    /// Invalid POI block number.
+    #[error("invalid POI block number '{0}': must be greater than zero")]
+    InvalidPoiBlockNumber(i32),
 }
 
 impl ErrorClassification for ValidationError {
@@ -320,12 +328,16 @@ pub fn validate_allocation_id(allocation_id: &str) -> Result<(), ValidationError
 /// # Returns
 /// * `Ok(())` if all validations pass
 /// * `Err(ValidationError)` describing the first validation failure
+#[allow(clippy::too_many_arguments)]
 pub fn validate_action_input(
     action_type: &str,
     deployment_id: &str,
     protocol_network: &str,
     allocation_id: Option<&str>,
     amount: Option<&str>,
+    poi: Option<&str>,
+    public_poi: Option<&str>,
+    poi_block_number: Option<i32>,
     is_legacy: Option<bool>,
 ) -> Result<(), ValidationError> {
     // Validate deployment ID format
@@ -336,6 +348,9 @@ pub fn validate_action_input(
 
     // Reject legacy actions
     validate_not_legacy(is_legacy)?;
+
+    // Validate POI fields if provided
+    validate_poi_fields(poi, public_poi, poi_block_number)?;
 
     // Validate action type-specific requirements
     match action_type {
@@ -374,6 +389,54 @@ pub fn validate_action_input(
         }
     }
 
+    Ok(())
+}
+
+/// Validate POI fields for explicit Proof of Indexing submissions.
+///
+/// Rules:
+/// - If `poi` is provided, `poi_block_number` must be provided and > 0.
+/// - `public_poi` may be provided only when `poi` is provided.
+/// - If `poi_block_number` is provided, `poi` must be provided.
+pub fn validate_poi_fields(
+    poi: Option<&str>,
+    public_poi: Option<&str>,
+    poi_block_number: Option<i32>,
+) -> Result<(), ValidationError> {
+    if let Some(poi_str) = poi {
+        validate_poi_hash(poi_str)?;
+
+        let block = poi_block_number.ok_or(ValidationError::MissingRequiredField {
+            action_type: "unallocate/reallocate",
+            field: "poi_block_number",
+        })?;
+        if block <= 0 {
+            return Err(ValidationError::InvalidPoiBlockNumber(block));
+        }
+
+        if let Some(public_poi_str) = public_poi {
+            validate_poi_hash(public_poi_str)?;
+        }
+    } else {
+        if public_poi.is_some() || poi_block_number.is_some() {
+            return Err(ValidationError::MissingRequiredField {
+                action_type: "unallocate/reallocate",
+                field: "poi",
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_poi_hash(poi: &str) -> Result<(), ValidationError> {
+    let poi = poi.trim();
+    if !poi.starts_with("0x") || poi.len() != 66 {
+        return Err(ValidationError::InvalidPoi(poi.to_string()));
+    }
+    if !poi[2..].chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(ValidationError::InvalidPoi(poi.to_string()));
+    }
     Ok(())
 }
 
@@ -583,13 +646,18 @@ mod tests {
             network,
             None,
             Some("1000000000000000000"),
+            None,
+            None,
+            None,
             None
         )
         .is_ok());
 
         // Allocate missing amount
         assert!(matches!(
-            validate_action_input("allocate", deployment, network, None, None, None),
+            validate_action_input(
+                "allocate", deployment, network, None, None, None, None, None, None
+            ),
             Err(ValidationError::MissingRequiredField {
                 action_type: "allocate",
                 field: "amount"
@@ -604,6 +672,9 @@ mod tests {
                 network,
                 None,
                 Some("not-a-number"),
+                None,
+                None,
+                None,
                 None
             ),
             Err(ValidationError::InvalidAmount(_, _))
@@ -611,7 +682,17 @@ mod tests {
 
         // Allocate with zero amount
         assert!(matches!(
-            validate_action_input("allocate", deployment, network, None, Some("0"), None),
+            validate_action_input(
+                "allocate",
+                deployment,
+                network,
+                None,
+                Some("0"),
+                None,
+                None,
+                None,
+                None
+            ),
             Err(ValidationError::ZeroAmount)
         ));
     }
@@ -629,13 +710,26 @@ mod tests {
             network,
             Some(allocation_id),
             None,
+            None,
+            None,
+            None,
             None
         )
         .is_ok());
 
         // Unallocate missing allocation_id
         assert!(matches!(
-            validate_action_input("unallocate", deployment, network, None, None, None),
+            validate_action_input(
+                "unallocate",
+                deployment,
+                network,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None
+            ),
             Err(ValidationError::MissingRequiredField {
                 action_type: "unallocate",
                 field: "allocation_id"
@@ -649,6 +743,9 @@ mod tests {
                 deployment,
                 network,
                 Some("invalid"),
+                None,
+                None,
+                None,
                 None,
                 None
             ),
@@ -669,6 +766,9 @@ mod tests {
             network,
             Some(allocation_id),
             Some("1000000000000000000"),
+            None,
+            None,
+            None,
             None
         )
         .is_ok());
@@ -681,6 +781,9 @@ mod tests {
                 network,
                 None,
                 Some("1000000000000000000"),
+                None,
+                None,
+                None,
                 None
             ),
             Err(ValidationError::MissingRequiredField {
@@ -696,6 +799,9 @@ mod tests {
                 deployment,
                 network,
                 Some(allocation_id),
+                None,
+                None,
+                None,
                 None,
                 None
             ),
@@ -718,6 +824,9 @@ mod tests {
                 "eip155:42161",
                 None,
                 Some("1000000000000000000"),
+                None,
+                None,
+                None,
                 None
             ),
             Err(ValidationError::InvalidDeploymentId(_))
@@ -731,6 +840,9 @@ mod tests {
                 "invalid",
                 None,
                 Some("1000000000000000000"),
+                None,
+                None,
+                None,
                 None
             ),
             Err(ValidationError::InvalidProtocolNetwork(_))
@@ -744,9 +856,109 @@ mod tests {
                 "eip155:42161",
                 Some(allocation_id),
                 None,
+                None,
+                None,
+                None,
                 Some(true)
             ),
             Err(ValidationError::LegacyActionNotSupported)
         ));
+    }
+
+    #[test]
+    fn test_validate_poi_fields() {
+        let deployment = "QmSWxvd8SaQK6qZKJ7xtfxCCGoRzGnoi2WNzmJYYJW9BXY";
+        let network = "eip155:42161";
+        let allocation_id = "0x1234567890123456789012345678901234567890";
+        let poi = "0x0000000000000000000000000000000000000000000000000000000000000001";
+        let public_poi = "0x0000000000000000000000000000000000000000000000000000000000000002";
+
+        assert!(matches!(
+            validate_action_input(
+                "unallocate",
+                deployment,
+                network,
+                Some(allocation_id),
+                None,
+                Some(poi),
+                None,
+                None,
+                None
+            ),
+            Err(ValidationError::MissingRequiredField { .. })
+        ));
+
+        assert!(matches!(
+            validate_action_input(
+                "unallocate",
+                deployment,
+                network,
+                Some(allocation_id),
+                None,
+                None,
+                None,
+                Some(10),
+                None
+            ),
+            Err(ValidationError::MissingRequiredField { .. })
+        ));
+
+        assert!(matches!(
+            validate_action_input(
+                "unallocate",
+                deployment,
+                network,
+                Some(allocation_id),
+                None,
+                None,
+                Some(public_poi),
+                None,
+                None
+            ),
+            Err(ValidationError::MissingRequiredField { .. })
+        ));
+
+        assert!(matches!(
+            validate_action_input(
+                "unallocate",
+                deployment,
+                network,
+                Some(allocation_id),
+                None,
+                Some("invalid"),
+                None,
+                Some(10),
+                None
+            ),
+            Err(ValidationError::InvalidPoi(_))
+        ));
+
+        assert!(matches!(
+            validate_action_input(
+                "unallocate",
+                deployment,
+                network,
+                Some(allocation_id),
+                None,
+                Some(poi),
+                None,
+                Some(0),
+                None
+            ),
+            Err(ValidationError::InvalidPoiBlockNumber(_))
+        ));
+
+        assert!(validate_action_input(
+            "unallocate",
+            deployment,
+            network,
+            Some(allocation_id),
+            None,
+            Some(poi),
+            Some(public_poi),
+            Some(10),
+            None
+        )
+        .is_ok());
     }
 }

@@ -253,6 +253,9 @@ impl ActionMutation {
                 &action.protocol_network,
                 action.allocation_id.as_deref(),
                 action.amount.as_deref(),
+                action.poi.as_deref(),
+                action.public_poi.as_deref(),
+                action.poi_block_number,
                 // is_legacy is always Some(false) after conversion, but we validate with None
                 // since the API doesn't expose this field
                 None,
