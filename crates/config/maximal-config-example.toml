@@ -211,6 +211,8 @@ enabled = true
 # Enable agent functionality (management API, reconciliation, allocation management)
 # When enabled, the Management API GraphQL server will be started
 enabled = false
+action_cooldown_secs = 900
+approved_action_timeout_secs = 3600
 
 [agent.management_api]
 # Port for the Management API GraphQL server

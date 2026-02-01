@@ -25,6 +25,8 @@ use crate::{
 
 /// Default cooldown period in seconds (15 minutes, matching TypeScript agent).
 pub const DEFAULT_ACTION_COOLDOWN_SECS: u64 = 900;
+/// Default timeout for approved actions before reconciliation resumes (1 hour).
+pub const DEFAULT_APPROVED_ACTION_TIMEOUT_SECS: u64 = 3600;
 
 /// Configuration for the reconciliation loop.
 #[derive(Debug, Clone)]
@@ -45,6 +47,8 @@ pub struct ReconciliationConfig {
     ///
     /// Default: 900 seconds (15 minutes), matching the TypeScript agent.
     pub action_cooldown_secs: u64,
+    /// Maximum time (seconds) to wait for approved actions before resuming reconciliation.
+    pub approved_action_timeout_secs: u64,
 }
 
 impl Default for ReconciliationConfig {
@@ -55,6 +59,7 @@ impl Default for ReconciliationConfig {
             max_allocation_epochs: 28,
             auto_approve: false,
             action_cooldown_secs: DEFAULT_ACTION_COOLDOWN_SECS,
+            approved_action_timeout_secs: DEFAULT_APPROVED_ACTION_TIMEOUT_SECS,
         }
     }
 }
@@ -140,11 +145,31 @@ async fn run_reconciliation_cycle(
     // Check for approved actions awaiting execution
     let approved_actions = Action::get_approved(pool, &config.protocol_network).await?;
     if !approved_actions.is_empty() {
-        info!(
+        let now = chrono::Utc::now();
+        let timeout = chrono::Duration::seconds(config.approved_action_timeout_secs as i64);
+        let blocking_count = approved_actions
+            .iter()
+            .filter(|action| {
+                action
+                    .updated_at
+                    .map(|ts| now.signed_duration_since(ts) <= timeout)
+                    .unwrap_or(true)
+            })
+            .count();
+        if blocking_count > 0 {
+            info!(
+                count = approved_actions.len(),
+                blocking = blocking_count,
+                timeout_secs = config.approved_action_timeout_secs,
+                "Skipping reconciliation: approved actions awaiting execution"
+            );
+            return Ok(());
+        }
+        warn!(
             count = approved_actions.len(),
-            "Skipping reconciliation: approved actions awaiting execution"
+            timeout_secs = config.approved_action_timeout_secs,
+            "Approved actions exceed timeout; continuing reconciliation"
         );
-        return Ok(());
     }
 
     // Get current state from watchers
@@ -302,11 +327,20 @@ mod tests {
         assert_eq!(config.max_allocation_epochs, 28);
         assert!(!config.auto_approve);
         assert_eq!(config.action_cooldown_secs, DEFAULT_ACTION_COOLDOWN_SECS);
+        assert_eq!(
+            config.approved_action_timeout_secs,
+            DEFAULT_APPROVED_ACTION_TIMEOUT_SECS
+        );
     }
 
     #[test]
     fn test_default_action_cooldown_is_fifteen_minutes() {
         // Verify the default matches TypeScript agent's 15-minute cooldown
         assert_eq!(DEFAULT_ACTION_COOLDOWN_SECS, 900);
+    }
+
+    #[test]
+    fn test_default_approved_action_timeout_is_one_hour() {
+        assert_eq!(DEFAULT_APPROVED_ACTION_TIMEOUT_SECS, 3600);
     }
 }

@@ -738,9 +738,14 @@ pub struct HorizonConfig {
 
 /// Default action cooldown period in seconds (15 minutes, matching TypeScript agent).
 pub const DEFAULT_ACTION_COOLDOWN_SECS: u64 = 900;
+pub const DEFAULT_APPROVED_ACTION_TIMEOUT_SECS: u64 = 3600;
 
 fn default_action_cooldown_secs() -> u64 {
     DEFAULT_ACTION_COOLDOWN_SECS
+}
+
+fn default_approved_action_timeout_secs() -> u64 {
+    DEFAULT_APPROVED_ACTION_TIMEOUT_SECS
 }
 
 /// Configuration for the indexer agent functionality
@@ -776,6 +781,10 @@ pub struct AgentConfig {
     /// Default: 900 seconds (15 minutes), matching the TypeScript agent.
     #[serde(default = "default_action_cooldown_secs")]
     pub action_cooldown_secs: u64,
+
+    /// Maximum time (seconds) to wait for approved actions before resuming reconciliation.
+    #[serde(default = "default_approved_action_timeout_secs")]
+    pub approved_action_timeout_secs: u64,
 }
 
 impl Default for AgentConfig {
@@ -786,6 +795,7 @@ impl Default for AgentConfig {
             executor: ExecutorAgentConfig::default(),
             tap_agent_enabled: false,
             action_cooldown_secs: DEFAULT_ACTION_COOLDOWN_SECS,
+            approved_action_timeout_secs: DEFAULT_APPROVED_ACTION_TIMEOUT_SECS,
         }
     }
 }
