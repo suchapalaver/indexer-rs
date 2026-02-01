@@ -1121,6 +1121,8 @@ fn parse_deployment_id(deployment_id: &str) -> Result<FixedBytes<32>, ExecutorEr
 
 #[cfg(test)]
 mod tests {
+    use sqlx::postgres::PgPoolOptions;
+
     use super::*;
 
     #[test]
@@ -1278,5 +1280,59 @@ mod tests {
 
         let expected = "61460d93990b5f8d08d8e82ac995be9f46e4433c3b8764e14d3d2a8565d85a0b6340a054d41c66b1ab272db68e3802fe687b6e2ef52f70fa5b3a6f855255a7a11c";
         assert_eq!(signature_hex, expected);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_poi_requires_block_number_when_explicit() {
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://user@localhost/db")
+            .expect("connect_lazy should not error");
+        let provider_cache = Arc::new(ProviderCache::new("http://localhost:8545".to_string()));
+        let signer = PrivateKeySigner::random();
+        let config = ExecutorConfig {
+            protocol_network: "eip155:1".to_string(),
+            chain_id: 1,
+            ..ExecutorConfig::default()
+        };
+        let (_epoch_tx, epoch_rx) = watch::channel(0u64);
+        let executor = ActionExecutor::new(pool, provider_cache, signer, config, epoch_rx);
+
+        let action = Action {
+            id: 1,
+            action_type: ActionType::Unallocate,
+            status: ActionStatus::Queued,
+            priority: Some(0),
+            deployment_id: "0x0000000000000000000000000000000000000000000000000000000000000001"
+                .to_string(),
+            allocation_id: Some("0x1234567890123456789012345678901234567890".to_string()),
+            amount: None,
+            poi: Some(
+                "0x0000000000000000000000000000000000000000000000000000000000000001".to_string(),
+            ),
+            force: None,
+            source: "test".to_string(),
+            reason: "test".to_string(),
+            transaction: None,
+            failure_reason: None,
+            protocol_network: "eip155:1".to_string(),
+            is_legacy: false,
+            public_poi: None,
+            poi_block_number: None,
+            created_at: None,
+            updated_at: None,
+        };
+
+        let deployment_id: DeploymentId = action.deployment_id.parse().unwrap();
+        let err = executor
+            .resolve_poi_for_action(&action, &deployment_id)
+            .await
+            .unwrap_err();
+
+        match err {
+            ExecutorError::TransactionBuild(msg) => {
+                assert!(msg.contains("missing POI block number"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
     }
 }
