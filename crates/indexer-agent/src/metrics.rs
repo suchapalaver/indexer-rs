@@ -106,6 +106,18 @@ pub static EXECUTOR_TRANSACTIONS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(
     .expect("failed to register agent_executor_transactions_total metric")
 });
 
+/// Total number of reallocate actions where unallocate succeeded but allocate failed.
+///
+/// This tracks partial reallocate failures caused by non-atomic execution.
+pub static REALLOCATE_PARTIAL_FAILURES_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    register_int_counter_vec!(
+        "agent_reallocate_partial_failures_total",
+        "Total number of reallocate actions where unallocate succeeded but allocate failed",
+        &[]
+    )
+    .expect("failed to register agent_reallocate_partial_failures_total metric")
+});
+
 /// Gas used by executor transactions (in wei).
 ///
 /// Labels:
@@ -240,6 +252,12 @@ pub fn record_transaction_reverted(action_type: &str, gas_used: u64) {
         .observe(gas_used as f64);
 }
 
+pub fn record_reallocate_partial_failure() {
+    REALLOCATE_PARTIAL_FAILURES_TOTAL
+        .with_label_values(&[])
+        .inc();
+}
+
 /// Record gas price wait - no wait needed.
 pub fn record_gas_price_immediate() {
     EXECUTOR_GAS_PRICE_WAITS_TOTAL
@@ -280,6 +298,7 @@ mod tests {
         let _ = &*ACTIONS_COOLDOWN_SKIPPED_TOTAL;
         let _ = &*ACTIONS_INVALID_INPUT_TOTAL;
         let _ = &*EXECUTOR_TRANSACTIONS_TOTAL;
+        let _ = &*REALLOCATE_PARTIAL_FAILURES_TOTAL;
         let _ = &*EXECUTOR_GAS_USED;
         let _ = &*EXECUTOR_GAS_PRICE_WAIT_SECONDS;
         let _ = &*EXECUTOR_GAS_PRICE_WAITS_TOTAL;
@@ -296,6 +315,7 @@ mod tests {
         record_transaction_success("allocate", 200_000);
         record_transaction_failed("unallocate");
         record_transaction_reverted("reallocate", 150_000);
+        record_reallocate_partial_failure();
         record_gas_price_immediate();
         record_gas_price_waited(30.0);
         record_gas_price_timeout(300.0);

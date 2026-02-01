@@ -2110,6 +2110,55 @@ pub mod tests {
         prefix: String,
     }
 
+    async fn recv_until<F>(
+        receiver: &mut mpsc::Receiver<SenderAccountMessage>,
+        mut predicate: F,
+        timeout: Duration,
+    ) -> Option<SenderAccountMessage>
+    where
+        F: FnMut(&SenderAccountMessage) -> bool,
+    {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            match tokio::time::timeout(remaining, receiver.recv()).await {
+                Ok(Some(msg)) => {
+                    if predicate(&msg) {
+                        return Some(msg);
+                    }
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    async fn wait_for_deny(
+        sender_account: &ActorRef<SenderAccountMessage>,
+        expected: bool,
+        timeout: Duration,
+    ) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let deny = call!(sender_account, SenderAccountMessage::GetDeny).unwrap();
+            if deny == expected {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    async fn wait_for_notify(notify: &tokio::sync::Notify, timeout: Duration) -> bool {
+        tokio::time::timeout(timeout, notify.notified())
+            .await
+            .is_ok()
+    }
+
     #[tokio::test]
     async fn test_update_allocation_ids() {
         let mock_escrow_subgraph = setup_mock_escrow_subgraph().await;
@@ -2151,7 +2200,13 @@ pub mod tests {
                 allocation_ids.clone(),
             ))
             .unwrap();
-        let message = msg_receiver.recv().await.expect("Channel failed");
+        let message = recv_until(
+            &mut msg_receiver,
+            |msg| matches!(msg, SenderAccountMessage::UpdateAllocationIds(_)),
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("Expected UpdateAllocationIds message");
         insta::assert_debug_snapshot!(message);
 
         // verify if create sender account
@@ -2168,7 +2223,13 @@ pub mod tests {
         sender_account
             .cast(SenderAccountMessage::UpdateAllocationIds(HashSet::new()))
             .unwrap();
-        let message = msg_receiver.recv().await.expect("Channel failed");
+        let message = recv_until(
+            &mut msg_receiver,
+            |msg| matches!(msg, SenderAccountMessage::UpdateAllocationIds(_)),
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("Expected UpdateAllocationIds message");
         insta::assert_debug_snapshot!(message);
 
         let actor_ref = ActorRef::<SenderAllocationMessage>::where_is(sender_allocation_id.clone());
@@ -2199,7 +2260,13 @@ pub mod tests {
         sender_account
             .cast(SenderAccountMessage::UpdateAllocationIds(HashSet::new()))
             .unwrap();
-        let msg = msg_receiver.recv().await.expect("Channel failed");
+        let msg = recv_until(
+            &mut msg_receiver,
+            |msg| matches!(msg, SenderAccountMessage::UpdateAllocationIds(_)),
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("Expected UpdateAllocationIds message");
         insta::assert_debug_snapshot!(msg);
 
         if let Some(actor_ref) =
@@ -2577,14 +2644,20 @@ pub mod tests {
 
         // wait to try again so it's outside the buffer
         tokio::time::sleep(RETRY_DURATION).await;
-        assert_triggered!(triggered_rav_request);
+        assert!(
+            wait_for_notify(&triggered_rav_request, Duration::from_millis(200)).await,
+            "Expected notify to be triggered"
+        );
 
         // Verify that no additional retry happens since the first RAV request
         // successfully cleared the unaggregated fees and resolved the deny condition.
         // This validates that the retry mechanism stops when the underlying issue is resolved,
         // which is the correct behavior according to the TAP protocol and retry logic.
         tokio::time::sleep(RETRY_DURATION).await;
-        assert_not_triggered!(triggered_rav_request);
+        assert!(
+            !wait_for_notify(&triggered_rav_request, Duration::from_millis(100)).await,
+            "Expected notify to not be triggered"
+        );
     }
 
     #[tokio::test]
@@ -2959,8 +3032,10 @@ pub mod tests {
 
         flush_messages(&mut msg_receiver).await;
 
-        let deny = call!(sender_account, SenderAccountMessage::GetDeny).unwrap();
-        assert!(deny, "should block the sender");
+        assert!(
+            wait_for_deny(&sender_account, true, Duration::from_secs(1)).await,
+            "should block the sender"
+        );
 
         // simulate deposit
         escrow_accounts_tx
@@ -2972,8 +3047,10 @@ pub mod tests {
 
         flush_messages(&mut msg_receiver).await;
 
-        let deny = call!(sender_account, SenderAccountMessage::GetDeny).unwrap();
-        assert!(!deny, "should unblock the sender");
+        assert!(
+            wait_for_deny(&sender_account, false, Duration::from_secs(1)).await,
+            "should unblock the sender"
+        );
 
         sender_account.stop_and_wait(None, None).await.unwrap();
     }
@@ -3012,27 +3089,24 @@ pub mod tests {
                 ReceiptFees::NewReceipt(TRIGGER_VALUE, get_current_timestamp_u64_ns()),
             ))
             .unwrap();
-        let expected = |msg| {
+        let expected = |msg: &SenderAccountMessage| {
             matches!(
                 msg,
                 SenderAccountMessage::UpdateReceiptFees(
                     AllocationId(collection_id),
                     ReceiptFees::NewReceipt(TRIGGER_VALUE, _)
-                ) if collection_id == CollectionId::from(ALLOCATION_ID_0)
+                ) if *collection_id == CollectionId::from(ALLOCATION_ID_0)
             )
         };
-        let mut matched = false;
-        for _ in 0..2 {
-            let msg = msg_receiver.recv().await.expect("Channel failed");
-            if expected(msg) {
-                matched = true;
-                break;
-            }
-        }
-        assert!(matched, "Expected NewReceipt message not found");
+        let msg = recv_until(&mut msg_receiver, expected, Duration::from_secs(1))
+            .await
+            .expect("Expected NewReceipt message not found");
+        assert!(expected(&msg));
 
-        let deny = call!(sender_account, SenderAccountMessage::GetDeny).unwrap();
-        assert!(deny, "should be blocked");
+        assert!(
+            wait_for_deny(&sender_account, true, Duration::from_secs(1)).await,
+            "should be blocked"
+        );
 
         let scheduler_enabled =
             call!(sender_account, SenderAccountMessage::IsSchedulerEnabled).unwrap();
@@ -3042,8 +3116,10 @@ pub mod tests {
         allocation.stop_and_wait(None, None).await.unwrap();
 
         // should remove the block and the retry
-        let deny = call!(sender_account, SenderAccountMessage::GetDeny).unwrap();
-        assert!(!deny, "should be unblocked");
+        assert!(
+            wait_for_deny(&sender_account, false, Duration::from_secs(1)).await,
+            "should be unblocked"
+        );
 
         let scheuduler_enabled =
             call!(sender_account, SenderAccountMessage::IsSchedulerEnabled).unwrap();

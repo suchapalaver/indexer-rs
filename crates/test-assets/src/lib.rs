@@ -534,10 +534,30 @@ static SHARED_POSTGRES: OnceCell<SharedPostgres> = OnceCell::const_new();
 async fn shared_postgres() -> &'static SharedPostgres {
     SHARED_POSTGRES
         .get_or_init(|| async {
-            let pg_container = postgres::Postgres::default()
-                .start()
-                .await
-                .expect("Failed to start PostgreSQL container");
+            let mut last_err = None;
+            let mut pg_container = None;
+            for attempt in 1..=3 {
+                match postgres::Postgres::default().start().await {
+                    Ok(container) => {
+                        pg_container = Some(container);
+                        break;
+                    }
+                    Err(err) => {
+                        last_err = Some(err);
+                        tracing::warn!(attempt, "Failed to start PostgreSQL container, retrying");
+                        tokio::time::sleep(Duration::from_secs(attempt)).await;
+                    }
+                }
+            }
+            let pg_container = match pg_container {
+                Some(container) => container,
+                None => {
+                    if let Some(err) = last_err {
+                        panic!("Failed to start PostgreSQL container: {err}");
+                    }
+                    panic!("Failed to start PostgreSQL container");
+                }
+            };
 
             let host_port = pg_container
                 .get_host_port_ipv4(5432)

@@ -553,6 +553,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_action_transaction_allowed_on_deploying_and_failed() {
+        let test_db = setup_shared_test_db().await;
+        let pool = test_db.pool;
+
+        let input = ActionInput {
+            action_type: ActionType::Allocate,
+            deployment_id: "0x0000000000000000000000000000000000000000000000000000000000000001"
+                .to_string(),
+            allocation_id: None,
+            amount: Some("1".to_string()),
+            poi: None,
+            force: None,
+            source: "test".to_string(),
+            reason: "test".to_string(),
+            priority: Some(0),
+            protocol_network: "eip155:1".to_string(),
+            is_legacy: Some(false),
+            public_poi: None,
+            poi_block_number: None,
+        };
+
+        let action = Action::queue(&pool, input).await.unwrap();
+
+        let action = Action::update_status(
+            &pool,
+            action.id,
+            &action.protocol_network,
+            ActionStatus::Deploying,
+            Some("0xabc"),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(action.transaction.as_deref(), Some("0xabc"));
+
+        let action = Action::update_status(
+            &pool,
+            action.id,
+            &action.protocol_network,
+            ActionStatus::Failed,
+            Some("0xdef"),
+            Some("reverted"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(action.transaction.as_deref(), Some("0xabc"));
+        assert_eq!(action.failure_reason.as_deref(), Some("reverted"));
+    }
+
+    #[tokio::test]
     async fn test_action_queue_rejects_missing_amount() {
         let test_db = setup_shared_test_db().await;
         let pool = test_db.pool;

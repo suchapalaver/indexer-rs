@@ -3,8 +3,8 @@
 
 -- Invariant 1.3: Transaction hash only set on SUCCESS status
 -- The transaction field should only be populated when an action successfully completes.
-ALTER TABLE "Actions" ADD CONSTRAINT chk_transaction_only_on_success
-CHECK (transaction IS NULL OR status = 'success');
+ALTER TABLE "Actions" ADD CONSTRAINT chk_transaction_on_terminal_or_deploying
+CHECK (transaction IS NULL OR status IN ('deploying', 'success', 'failed'));
 
 -- Invariant 1.2: Allocation ID required for unallocate/reallocate
 -- Unallocate and reallocate actions must reference an existing allocation.

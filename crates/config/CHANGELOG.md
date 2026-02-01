@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Documentation
+
+* document default `tap.allocation_reconciliation_interval_secs` now 60 seconds (was 300)
+
 ## [1.8.1](https://github.com/graphprotocol/indexer-rs/compare/indexer-config-v1.8.0...indexer-config-v1.8.1) (2026-01-26)
 
 

@@ -558,6 +558,17 @@ impl ActionExecutor {
     }
 
     /// Execute a reallocate action.
+    ///
+    /// # WARNING: Non-Atomic Operation
+    ///
+    /// This executes two separate transactions:
+    /// 1. Unallocate (close existing allocation)
+    /// 2. Allocate (create new allocation)
+    ///
+    /// If the first succeeds but the second fails, the original allocation
+    /// is closed and stake returns to the indexer's pool. Operators must
+    /// re-allocate manually or retry. A future improvement is to use
+    /// SubgraphService multicall for atomicity.
     async fn execute_reallocate(
         &self,
         action: &Action,
@@ -570,7 +581,19 @@ impl ActionExecutor {
         let _unallocate_hash = self.execute_unallocate(action, provider).await?;
 
         // Execute allocate with new amount
-        self.execute_allocate(action, provider).await
+        match self.execute_allocate(action, provider).await {
+            Ok(tx_hash) => Ok(tx_hash),
+            Err(e) => {
+                warn!(
+                    action_id = action.id,
+                    deployment = %action.deployment_id,
+                    error = %e,
+                    "Reallocate partial failure: unallocate succeeded but allocate failed"
+                );
+                metrics::record_reallocate_partial_failure();
+                Err(e)
+            }
+        }
     }
 
     /// Send a transaction to the SubgraphService contract.
