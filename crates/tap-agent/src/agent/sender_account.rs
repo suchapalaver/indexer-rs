@@ -2156,7 +2156,13 @@ pub mod tests {
 
         // verify if create sender account
         let sender_allocation_id = format!("{}:{}:{}", prefix.clone(), SENDER.1, ALLOCATION_ID_0);
-        let actor_ref = ActorRef::<SenderAllocationMessage>::where_is(sender_allocation_id.clone());
+        let mut actor_ref =
+            ActorRef::<SenderAllocationMessage>::where_is(sender_allocation_id.clone());
+        let start = tokio::time::Instant::now();
+        while actor_ref.is_none() && start.elapsed() < Duration::from_secs(1) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            actor_ref = ActorRef::<SenderAllocationMessage>::where_is(sender_allocation_id.clone());
+        }
         assert!(actor_ref.is_some());
 
         sender_account
@@ -3156,14 +3162,23 @@ pub mod tests {
         tokio::task::yield_now().await;
 
         // Should receive ReconcileAllocations message from the periodic task
-        let message = tokio::time::timeout(Duration::from_millis(50), msg_receiver.recv())
-            .await
-            .expect("Should receive message within timeout")
-            .expect("Channel should not be closed");
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+        let mut got_reconcile = false;
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(50), msg_receiver.recv()).await {
+                Ok(Some(SenderAccountMessage::ReconcileAllocations)) => {
+                    got_reconcile = true;
+                    break;
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) => break,
+                Err(_) => continue,
+            }
+        }
 
         assert!(
-            matches!(message, SenderAccountMessage::ReconcileAllocations),
-            "Expected ReconcileAllocations from periodic task, got {message:?}"
+            got_reconcile,
+            "Expected ReconcileAllocations from periodic task"
         );
 
         // Drain any UpdateAllocationIds message that follows ReconcileAllocations

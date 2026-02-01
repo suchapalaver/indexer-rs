@@ -136,12 +136,10 @@ where
 
     tokio::spawn(async move {
         loop {
-            select! {
-                Ok(())= receiver.changed() =>{},
-                else=>{
-                    // Something is wrong.
-                    panic!("receiver was dropped");
-                }
+            let changed = receiver.changed().await;
+            if changed.is_err() {
+                tracing::debug!("Watcher source dropped, stopping mapped watcher task");
+                break;
             }
 
             let current_val = receiver.borrow().clone();

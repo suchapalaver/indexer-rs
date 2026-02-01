@@ -515,19 +515,59 @@ use testcontainers_modules::{
     postgres,
     testcontainers::{runners::AsyncRunner, ContainerAsync},
 };
+use tokio::sync::OnceCell;
 
 /// Container handle returned by setup functions to keep container alive
 pub struct TestDatabase {
     pub pool: sqlx::PgPool,
     pub url: String,
+}
+
+struct SharedPostgres {
+    host: String,
+    port: u16,
     _container: ContainerAsync<postgres::Postgres>,
+}
+
+static SHARED_POSTGRES: OnceCell<SharedPostgres> = OnceCell::const_new();
+
+async fn shared_postgres() -> &'static SharedPostgres {
+    SHARED_POSTGRES
+        .get_or_init(|| async {
+            let pg_container = postgres::Postgres::default()
+                .start()
+                .await
+                .expect("Failed to start PostgreSQL container");
+
+            let host_port = pg_container
+                .get_host_port_ipv4(5432)
+                .await
+                .expect("Failed to get container port");
+
+            let host = if std::env::var("CI").is_ok() {
+                pg_container
+                    .get_host()
+                    .await
+                    .expect("Failed to get container host")
+                    .to_string()
+            } else {
+                "localhost".to_string()
+            };
+
+            SharedPostgres {
+                host,
+                port: host_port,
+                _container: pg_container,
+            }
+        })
+        .await
 }
 
 /// Set up a test database using testcontainers
 ///
-/// This creates an isolated PostgreSQL container and database for testing.
-/// The container will be kept alive as long as the returned TestDatabase
-/// instance is not dropped.
+/// This creates an isolated PostgreSQL database within a shared container
+/// for testing. The container is shared across tests and the database is
+/// unique per test to preserve isolation while allowing parallelism.
 pub async fn setup_shared_test_db() -> TestDatabase {
     use std::sync::atomic::{AtomicU32, Ordering};
     static DB_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -536,30 +576,13 @@ pub async fn setup_shared_test_db() -> TestDatabase {
     let db_id = DB_COUNTER.fetch_add(1, Ordering::SeqCst);
     let unique_db_name = format!("test_db_{db_id}");
 
-    let pg_container = postgres::Postgres::default()
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL container");
-
-    let host_port = pg_container
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("Failed to get container port");
-
-    // In CI environments, we might need to use the container's IP instead of localhost
-    let host = if std::env::var("CI").is_ok() {
-        pg_container
-            .get_host()
-            .await
-            .expect("Failed to get container host")
-            .to_string()
-    } else {
-        "localhost".to_string()
-    };
+    let shared = shared_postgres().await;
 
     // Connect to postgres database first to create our test database
-    let admin_connection_string =
-        format!("postgres://postgres:postgres@{host}:{host_port}/postgres");
+    let admin_connection_string = format!(
+        "postgres://postgres:postgres@{}:{}/postgres",
+        shared.host, shared.port
+    );
 
     tracing::debug!(
         "Attempting to connect to admin database: {}",
@@ -576,8 +599,10 @@ pub async fn setup_shared_test_db() -> TestDatabase {
         .expect("Failed to create test database");
 
     // Connect to our test database
-    let connection_string =
-        format!("postgres://postgres:postgres@{host}:{host_port}/{unique_db_name}");
+    let connection_string = format!(
+        "postgres://postgres:postgres@{}:{}/{}",
+        shared.host, shared.port, unique_db_name
+    );
     let pool = sqlx::PgPool::connect(&connection_string)
         .await
         .expect("Failed to connect to test database");
@@ -600,15 +625,14 @@ pub async fn setup_shared_test_db() -> TestDatabase {
     TestDatabase {
         pool,
         url: connection_string,
-        _container: pg_container,
     }
 }
 
 /// Set up a test database using testcontainers with a custom migrator
 ///
-/// This creates an isolated PostgreSQL container and database for testing,
-/// using the provided migrator to run migrations. This is useful for testing
-/// scenarios where only certain migrations should be applied.
+/// This creates an isolated PostgreSQL database within a shared container
+/// for testing, using the provided migrator to run migrations. This is useful
+/// for testing scenarios where only certain migrations should be applied.
 pub async fn setup_test_db_with_migrator(migrator: Migrator) -> TestDatabase {
     use std::sync::atomic::{AtomicU32, Ordering};
     static DB_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -617,30 +641,13 @@ pub async fn setup_test_db_with_migrator(migrator: Migrator) -> TestDatabase {
     let db_id = DB_COUNTER.fetch_add(1, Ordering::SeqCst);
     let unique_db_name = format!("test_db_custom_{db_id}");
 
-    let pg_container = postgres::Postgres::default()
-        .start()
-        .await
-        .expect("Failed to start PostgreSQL container");
-
-    let host_port = pg_container
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("Failed to get container port");
-
-    // In CI environments, we might need to use the container's IP instead of localhost
-    let host = if std::env::var("CI").is_ok() {
-        pg_container
-            .get_host()
-            .await
-            .expect("Failed to get container host")
-            .to_string()
-    } else {
-        "localhost".to_string()
-    };
+    let shared = shared_postgres().await;
 
     // Connect to postgres database first to create our test database
-    let admin_connection_string =
-        format!("postgres://postgres:postgres@{host}:{host_port}/postgres");
+    let admin_connection_string = format!(
+        "postgres://postgres:postgres@{}:{}/postgres",
+        shared.host, shared.port
+    );
 
     tracing::debug!(
         "Attempting to connect to admin database: {}",
@@ -657,8 +664,10 @@ pub async fn setup_test_db_with_migrator(migrator: Migrator) -> TestDatabase {
         .expect("Failed to create test database");
 
     // Connect to our test database
-    let connection_string =
-        format!("postgres://postgres:postgres@{host}:{host_port}/{unique_db_name}");
+    let connection_string = format!(
+        "postgres://postgres:postgres@{}:{}/{}",
+        shared.host, shared.port, unique_db_name
+    );
     let pool = sqlx::PgPool::connect(&connection_string)
         .await
         .expect("Failed to connect to test database");
@@ -680,6 +689,5 @@ pub async fn setup_test_db_with_migrator(migrator: Migrator) -> TestDatabase {
     TestDatabase {
         pool,
         url: connection_string,
-        _container: pg_container,
     }
 }
