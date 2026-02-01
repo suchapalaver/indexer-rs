@@ -859,7 +859,7 @@ fn default_management_api_port() -> u16 {
 }
 
 fn default_management_api_host() -> String {
-    "0.0.0.0".to_string()
+    "127.0.0.1".to_string()
 }
 
 impl Default for ManagementApiConfig {

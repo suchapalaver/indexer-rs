@@ -10,7 +10,7 @@ CHECK (transaction IS NULL OR status IN ('deploying', 'success', 'failed'));
 -- Unallocate and reallocate actions must reference an existing allocation.
 ALTER TABLE "Actions" ADD CONSTRAINT chk_allocation_id_required
 CHECK (
-    (type = 'allocate' AND allocation_id IS NULL) OR
+    type = 'allocate' OR
     (type IN ('unallocate', 'reallocate') AND allocation_id IS NOT NULL)
 );
 
@@ -18,6 +18,6 @@ CHECK (
 -- Allocate and reallocate actions must specify an allocation amount.
 ALTER TABLE "Actions" ADD CONSTRAINT chk_amount_required
 CHECK (
-    (type = 'unallocate' AND amount IS NULL) OR
+    type = 'unallocate' OR
     (type IN ('allocate', 'reallocate') AND amount IS NOT NULL)
 );

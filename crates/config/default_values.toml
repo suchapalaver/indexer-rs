@@ -55,4 +55,4 @@ enabled = false
 # Port for the Management API GraphQL server
 port = 8000
 # Host address to bind to
-host = "0.0.0.0"
+host = "127.0.0.1"
