@@ -433,6 +433,7 @@ mod tests {
     use std::str::FromStr;
 
     use bigdecimal::BigDecimal;
+    use test_assets::setup_shared_test_db;
 
     use super::*;
     use crate::rules::{ActivationCriteria, MergedIndexingRule};
@@ -473,5 +474,31 @@ mod tests {
         let decision = make_decision("Qm123", true);
         assert!(decision.rule.is_some());
         assert!(decision.rule.unwrap().allocation_amount.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_invalid_input_is_skipped_and_counted() {
+        let test_db = setup_shared_test_db().await;
+        let pool = test_db.pool;
+
+        let counter = metrics::ACTIONS_INVALID_INPUT_TOTAL.with_label_values(&["unallocate"]);
+        let before = counter.get();
+
+        let result = queue_unallocation_action(
+            &pool,
+            "invalid",
+            "0x0000000000000000000000000000000000000000000000000000000000000001",
+            "0x0000000000000000000000000000000000000001",
+            "invalid protocol network",
+            false,
+            false,
+            0,
+        )
+        .await
+        .unwrap();
+
+        assert!(result.is_none());
+        let after = counter.get();
+        assert!(after > before);
     }
 }

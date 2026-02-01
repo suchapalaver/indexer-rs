@@ -278,6 +278,7 @@ mod tests {
         let _ = &*RECONCILIATION_DURATION_SECONDS;
         let _ = &*RECONCILIATION_ACTIONS_QUEUED_TOTAL;
         let _ = &*ACTIONS_COOLDOWN_SKIPPED_TOTAL;
+        let _ = &*ACTIONS_INVALID_INPUT_TOTAL;
         let _ = &*EXECUTOR_TRANSACTIONS_TOTAL;
         let _ = &*EXECUTOR_GAS_USED;
         let _ = &*EXECUTOR_GAS_PRICE_WAIT_SECONDS;
@@ -291,6 +292,7 @@ mod tests {
         record_reconciliation_error(0.5);
         record_action_queued("allocate");
         record_action_cooldown_skip("unallocate");
+        record_action_invalid_input("reallocate");
         record_transaction_success("allocate", 200_000);
         record_transaction_failed("unallocate");
         record_transaction_reverted("reallocate", 150_000);
