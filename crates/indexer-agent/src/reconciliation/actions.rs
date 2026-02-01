@@ -119,6 +119,9 @@ pub async fn queue_allocation_action(
             // always set is_legacy = Some(false), but handle it for completeness.
             unreachable!("reconciliation should never queue legacy actions");
         }
+        Err(ActionError::InvalidInput(e)) => {
+            return Err(sqlx::Error::Protocol(e.to_string()));
+        }
         Err(ActionError::Database(e)) => return Err(e),
     };
 
@@ -223,6 +226,9 @@ pub async fn queue_unallocation_action(
             );
             return Ok(None);
         }
+        Err(ActionError::InvalidInput(e)) => {
+            return Err(sqlx::Error::Protocol(e.to_string()));
+        }
         Err(ActionError::Database(e)) => return Err(e),
     };
 
@@ -326,6 +332,9 @@ pub async fn queue_reallocation_action(
                 "Legacy reallocation not supported, skipping"
             );
             return Ok(None);
+        }
+        Err(ActionError::InvalidInput(e)) => {
+            return Err(sqlx::Error::Protocol(e.to_string()));
         }
         Err(ActionError::Database(e)) => return Err(e),
     };

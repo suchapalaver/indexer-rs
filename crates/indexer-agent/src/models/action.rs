@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool, Type};
 use thiserror::Error;
 
-use crate::error::{ErrorClass, ErrorClassification};
+use crate::{
+    error::{ErrorClass, ErrorClassification},
+    validation::{validate_action_input, ValidationError},
+};
 
 /// Errors that can occur when working with actions.
 #[derive(Debug, Error)]
@@ -23,6 +26,9 @@ pub enum ActionError {
     /// from the V1 Staking contract cannot be executed.
     #[error("legacy actions are not supported; this agent only supports Horizon (V2) allocations")]
     LegacyActionNotSupported,
+    /// Input validation failed.
+    #[error("invalid action input: {0}")]
+    InvalidInput(#[from] ValidationError),
 
     /// Database error.
     #[error("database error: {0}")]
@@ -34,6 +40,7 @@ impl ErrorClassification for ActionError {
         match self {
             ActionError::DuplicatePendingAction { .. } => ErrorClass::Invariant,
             ActionError::LegacyActionNotSupported => ErrorClass::Input,
+            ActionError::InvalidInput(_) => ErrorClass::Input,
             ActionError::Database(_) => ErrorClass::External,
         }
     }
@@ -47,6 +54,17 @@ pub enum ActionType {
     Allocate,
     Unallocate,
     Reallocate,
+}
+
+impl ActionType {
+    /// Returns the action type as a lowercase string slice.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            ActionType::Allocate => "allocate",
+            ActionType::Unallocate => "unallocate",
+            ActionType::Reallocate => "reallocate",
+        }
+    }
 }
 
 /// Status of an action in the queue
@@ -149,10 +167,15 @@ impl Action {
     /// as legacy (is_legacy = true). This agent only supports Horizon (V2)
     /// allocations.
     pub async fn queue(pool: &PgPool, input: ActionInput) -> Result<Self, ActionError> {
-        // Reject legacy actions - this agent only supports Horizon (V2)
-        if input.is_legacy == Some(true) {
-            return Err(ActionError::LegacyActionNotSupported);
-        }
+        // Validate input and reject legacy actions (Horizon-only).
+        validate_action_input(
+            input.action_type.as_str(),
+            &input.deployment_id,
+            &input.protocol_network,
+            input.allocation_id.as_deref(),
+            input.amount.as_deref(),
+            input.is_legacy,
+        )?;
 
         let deployment_id = input.deployment_id.clone();
 
@@ -455,6 +478,8 @@ impl Action {
 
 #[cfg(test)]
 mod tests {
+    use test_assets::setup_shared_test_db;
+
     use super::*;
 
     #[test]
@@ -473,5 +498,54 @@ mod tests {
         // ActionError::Database wraps sqlx::Error, which we can't easily construct
         // in a unit test, but we verify the From impl exists by checking the type
         let _: fn(sqlx::Error) -> ActionError = ActionError::from;
+    }
+
+    #[tokio::test]
+    async fn test_action_transaction_immutable() {
+        let test_db = setup_shared_test_db().await;
+        let pool = test_db.pool;
+
+        let input = ActionInput {
+            action_type: ActionType::Allocate,
+            deployment_id: "0x0000000000000000000000000000000000000000000000000000000000000001"
+                .to_string(),
+            allocation_id: None,
+            amount: Some("1".to_string()),
+            poi: None,
+            force: None,
+            source: "test".to_string(),
+            reason: "test".to_string(),
+            priority: Some(0),
+            protocol_network: "eip155:1".to_string(),
+            is_legacy: Some(false),
+            public_poi: None,
+            poi_block_number: None,
+        };
+
+        let action = Action::queue(&pool, input).await.unwrap();
+
+        let action = Action::update_status(
+            &pool,
+            action.id,
+            &action.protocol_network,
+            ActionStatus::Success,
+            Some("0xabc"),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(action.transaction.as_deref(), Some("0xabc"));
+
+        let action = Action::update_status(
+            &pool,
+            action.id,
+            &action.protocol_network,
+            ActionStatus::Success,
+            Some("0xdef"),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(action.transaction.as_deref(), Some("0xabc"));
     }
 }

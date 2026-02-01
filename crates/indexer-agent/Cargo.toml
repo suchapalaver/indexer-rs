@@ -29,3 +29,4 @@ url = { version = "2.5.0", features = ["serde"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+test-assets = { path = "../test-assets" }
