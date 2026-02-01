@@ -2233,7 +2233,7 @@ pub mod tests {
             hex::ToHexExt,
             primitives::{Address, U256},
         },
-        AllocationId as AllocationIdCore, CollectionId,
+        CollectionId,
     };
     use tokio::sync::mpsc;
     use wiremock::{
@@ -2319,9 +2319,8 @@ pub mod tests {
             .call()
             .await;
 
-        let allocation_ids = HashSet::from_iter([AllocationId::Legacy(AllocationIdCore::from(
-            ALLOCATION_ID_0,
-        ))]);
+        let allocation_ids =
+            HashSet::from_iter([AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_0))]);
         // we expect it to create a sender allocation
         sender_account
             .cast(SenderAccountMessage::UpdateAllocationIds(
@@ -2412,9 +2411,9 @@ pub mod tests {
 
         // we expect it to create a sender allocation
         sender_account
-            .cast(SenderAccountMessage::NewAllocationId(AllocationId::Legacy(
-                AllocationIdCore::from(ALLOCATION_ID_0),
-            )))
+            .cast(SenderAccountMessage::NewAllocationId(
+                AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_0)),
+            ))
             .unwrap();
 
         flush_messages(&mut msg_receiver).await;
@@ -2427,11 +2426,9 @@ pub mod tests {
         // nothing should change because we already created
         sender_account
             .cast(SenderAccountMessage::UpdateAllocationIds(
-                vec![AllocationId::Legacy(AllocationIdCore::from(
-                    ALLOCATION_ID_0,
-                ))]
-                .into_iter()
-                .collect(),
+                vec![AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_0))]
+                    .into_iter()
+                    .collect(),
             ))
             .unwrap();
 
@@ -2515,7 +2512,7 @@ pub mod tests {
         basic_sender_account
             .sender_account
             .cast(SenderAccountMessage::UpdateReceiptFees(
-                AllocationId::Legacy(AllocationIdCore::from(ALLOCATION_ID_0)),
+                AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_0)),
                 ReceiptFees::NewReceipt(TRIGGER_VALUE - 1, get_current_timestamp_u64_ns()),
             ))
             .unwrap();
@@ -2549,7 +2546,7 @@ pub mod tests {
         basic_sender_account
             .sender_account
             .cast(SenderAccountMessage::UpdateReceiptFees(
-                AllocationId::Legacy(AllocationIdCore::from(ALLOCATION_ID_0)),
+                AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_0)),
                 ReceiptFees::NewReceipt(TRIGGER_VALUE, get_current_timestamp_u64_ns()),
             ))
             .unwrap();
@@ -2563,7 +2560,7 @@ pub mod tests {
         basic_sender_account
             .sender_account
             .cast(SenderAccountMessage::UpdateReceiptFees(
-                AllocationId::Legacy(AllocationIdCore::from(ALLOCATION_ID_0)),
+                AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_0)),
                 ReceiptFees::Retry,
             ))
             .unwrap();
@@ -2593,7 +2590,7 @@ pub mod tests {
 
         sender_account
             .cast(SenderAccountMessage::UpdateReceiptFees(
-                AllocationId::Legacy(AllocationIdCore::from(ALLOCATION_ID_0)),
+                AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_0)),
                 ReceiptFees::NewReceipt(1, get_current_timestamp_u64_ns()),
             ))
             .unwrap();
@@ -2603,7 +2600,7 @@ pub mod tests {
 
         sender_account
             .cast(SenderAccountMessage::UpdateReceiptFees(
-                AllocationId::Legacy(AllocationIdCore::from(ALLOCATION_ID_0)),
+                AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_0)),
                 ReceiptFees::NewReceipt(1, get_current_timestamp_u64_ns()),
             ))
             .unwrap();
@@ -2614,7 +2611,7 @@ pub mod tests {
 
         sender_account
             .cast(SenderAccountMessage::UpdateReceiptFees(
-                AllocationId::Legacy(AllocationIdCore::from(ALLOCATION_ID_0)),
+                AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_0)),
                 ReceiptFees::Retry,
             ))
             .unwrap();
@@ -2632,11 +2629,9 @@ pub mod tests {
         let (sender_account, _, prefix, _, _, _) = create_sender_account()
             .pgpool(pgpool)
             .initial_allocation(
-                vec![AllocationId::Legacy(AllocationIdCore::from(
-                    ALLOCATION_ID_0,
-                ))]
-                .into_iter()
-                .collect(),
+                vec![AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_0))]
+                    .into_iter()
+                    .collect(),
             )
             .escrow_subgraph_endpoint(&mock_escrow_subgraph.uri())
             .call()
@@ -2739,7 +2734,7 @@ pub mod tests {
 
         sender_account
             .cast(SenderAccountMessage::UpdateReceiptFees(
-                AllocationId::Legacy(AllocationIdCore::from(ALLOCATION_ID_0)),
+                AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_0)),
                 ReceiptFees::NewReceipt(TRIGGER_VALUE, get_current_timestamp_u64_ns()),
             ))
             .unwrap();
@@ -2779,7 +2774,7 @@ pub mod tests {
             ($value:expr) => {
                 sender_account
                     .cast(SenderAccountMessage::UpdateReceiptFees(
-                        AllocationId::Legacy(AllocationIdCore::from(ALLOCATION_ID_0)),
+                        AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_0)),
                         ReceiptFees::UpdateValue(UnaggregatedReceipts {
                             value: $value,
                             last_id: 11,
@@ -2796,7 +2791,7 @@ pub mod tests {
             ($value:expr) => {
                 sender_account
                     .cast(SenderAccountMessage::UpdateInvalidReceiptFees(
-                        AllocationId::Legacy(AllocationIdCore::from(ALLOCATION_ID_0)),
+                        AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_0)),
                         UnaggregatedReceipts {
                             value: $value,
                             last_id: 11,
@@ -2934,7 +2929,7 @@ pub mod tests {
             ($value:expr) => {
                 sender_account
                     .cast(SenderAccountMessage::UpdateReceiptFees(
-                        AllocationId::Legacy(AllocationIdCore::from(ALLOCATION_ID_0)),
+                        AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_0)),
                         ReceiptFees::UpdateValue(UnaggregatedReceipts {
                             value: $value,
                             last_id: 11,
@@ -3230,7 +3225,7 @@ pub mod tests {
         // set retry
         sender_account
             .cast(SenderAccountMessage::UpdateReceiptFees(
-                AllocationId::Legacy(AllocationIdCore::from(ALLOCATION_ID_0)),
+                AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_0)),
                 ReceiptFees::NewReceipt(TRIGGER_VALUE, get_current_timestamp_u64_ns()),
             ))
             .unwrap();
@@ -3238,9 +3233,9 @@ pub mod tests {
         assert!(matches!(
             msg,
             SenderAccountMessage::UpdateReceiptFees(
-                AllocationId::Legacy(allocation_id),
+                AllocationId::Horizon(collection_id),
                 ReceiptFees::NewReceipt(TRIGGER_VALUE, _)
-            ) if allocation_id == AllocationIdCore::from(ALLOCATION_ID_0)
+            ) if collection_id == CollectionId::from(ALLOCATION_ID_0)
         ));
 
         let deny = call!(sender_account, SenderAccountMessage::GetDeny).unwrap();
@@ -3274,8 +3269,8 @@ pub mod tests {
         let mock_network_subgraph = MockServer::start().await;
 
         let allocation_set = HashSet::from_iter([
-            AllocationId::Legacy(AllocationIdCore::from(ALLOCATION_ID_0)),
-            AllocationId::Legacy(AllocationIdCore::from(ALLOCATION_ID_1)),
+            AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_0)),
+            AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_1)),
         ]);
 
         let (sender_account, mut msg_receiver, _, _, indexer_allocations_tx, _) =
@@ -3317,9 +3312,8 @@ pub mod tests {
         }
 
         // Test that updating the watcher changes what ReconcileAllocations sends
-        let new_allocation_set = HashSet::from_iter([AllocationId::Legacy(
-            AllocationIdCore::from(ALLOCATION_ID_0),
-        )]);
+        let new_allocation_set =
+            HashSet::from_iter([AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_0))]);
         indexer_allocations_tx
             .send(new_allocation_set.clone())
             .unwrap();
@@ -3428,9 +3422,8 @@ pub mod tests {
         let mock_network_subgraph = MockServer::start().await;
 
         // Start with one allocation
-        let initial_allocation_set = HashSet::from_iter([AllocationId::Legacy(
-            AllocationIdCore::from(ALLOCATION_ID_0),
-        )]);
+        let initial_allocation_set =
+            HashSet::from_iter([AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_0))]);
 
         let (sender_account, mut msg_receiver, _, _, indexer_allocations_tx, _) =
             create_sender_account()

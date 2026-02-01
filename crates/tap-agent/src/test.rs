@@ -789,7 +789,7 @@ pub mod actors {
 
     use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
     use test_assets::ALLOCATION_ID_0;
-    use thegraph_core::{alloy::primitives::Address, AllocationId as AllocationIdCore};
+    use thegraph_core::{alloy::primitives::Address, CollectionId};
     use tokio::sync::{mpsc, watch, Notify};
 
     use crate::agent::{
@@ -1029,7 +1029,7 @@ pub mod actors {
                         // fees are cleared, which stops the retry mechanism as intended.
                         let current_value = *self.next_unaggregated_fees_value.borrow();
                         sender_account.cast(SenderAccountMessage::UpdateReceiptFees(
-                            AllocationId::Legacy(AllocationIdCore::from(ALLOCATION_ID_0)),
+                            AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_0)),
                             ReceiptFees::RavRequestResponse(
                                 UnaggregatedReceipts {
                                     value: 0, // Clear unaggregated fees - they're now in the RAV

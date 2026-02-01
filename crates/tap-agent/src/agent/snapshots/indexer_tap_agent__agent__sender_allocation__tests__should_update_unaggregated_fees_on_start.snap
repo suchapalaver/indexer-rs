@@ -8,9 +8,9 @@ UpdateReceiptFees(
     ),
     UpdateValue(
         UnaggregatedReceipts {
-            value: 0,
-            last_id: 0,
-            counter: 0,
+            value: 55,
+            last_id: 10,
+            counter: 10,
         },
     ),
 )

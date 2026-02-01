@@ -1238,9 +1238,7 @@ pub mod tests {
         flush_messages, ALLOCATION_ID_0, TAP_EIP712_DOMAIN as TAP_EIP712_DOMAIN_SEPARATOR,
         TAP_SENDER as SENDER, TAP_SIGNER as SIGNER,
     };
-    use thegraph_core::{
-        alloy::primitives::Address, AllocationId as AllocationIdCore, CollectionId,
-    };
+    use thegraph_core::{alloy::primitives::Address, CollectionId};
     use tokio::sync::{mpsc, watch};
     use tonic::{transport::Endpoint, Code};
     use wiremock::{
@@ -1562,7 +1560,7 @@ pub mod tests {
 
         let last_message_emitted = message_receiver.recv().await.unwrap();
         let expected_message = SenderAccountMessage::UpdateReceiptFees(
-            AllocationId::Legacy(AllocationIdCore::from(ALLOCATION_ID_0)),
+            AllocationId::Horizon(CollectionId::from(ALLOCATION_ID_0)),
             ReceiptFees::NewReceipt(20u128, timestamp_ns),
         );
         assert_eq!(last_message_emitted, expected_message);
