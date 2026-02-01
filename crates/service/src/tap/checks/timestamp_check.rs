@@ -38,7 +38,7 @@ impl Check<TapReceipt> for TimestampCheck {
 
         let receipt_timestamp = Duration::from_nanos(receipt.signed_receipt().timestamp_ns());
 
-        if receipt_timestamp < max_timestamp && receipt_timestamp > min_timestamp {
+        if receipt_timestamp <= max_timestamp && receipt_timestamp >= min_timestamp {
             Ok(())
         } else {
             Err(CheckError::Failed(anyhow!(
