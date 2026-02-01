@@ -1,0 +1,2 @@
+ALTER TABLE tap_horizon_receipts
+DROP CONSTRAINT IF EXISTS tap_horizon_receipts_signature_unique;

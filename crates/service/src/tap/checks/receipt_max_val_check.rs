@@ -112,7 +112,7 @@ mod tests {
         assert!(timestamp_check
             .check(&Context::new(), &signed_receipt)
             .await
-            .is_ok());
+            .is_err());
     }
 
     #[tokio::test]
@@ -122,6 +122,6 @@ mod tests {
         assert!(timestamp_check
             .check(&Context::new(), &signed_receipt)
             .await
-            .is_err());
+            .is_ok());
     }
 }

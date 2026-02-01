@@ -441,6 +441,7 @@ pub async fn store_receipt_v2(
                 nonce,
                 value
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (signature) DO NOTHING
             RETURNING id
         "#,
         signer,
@@ -453,11 +454,23 @@ pub async fn store_receipt_v2(
         BigDecimal::from(signed_receipt.message.nonce),
         BigDecimal::from(BigInt::from(signed_receipt.message.value)),
     )
-    .fetch_one(pgpool)
+    .fetch_optional(pgpool)
     .await?;
 
-    // id is BIGSERIAL, so it should be safe to cast to u64.
-    let id: u64 = record.id.try_into()?;
+    let id: u64 = if let Some(record) = record {
+        record.id.try_into()?
+    } else {
+        let existing = sqlx::query!(
+            r#"
+                SELECT id FROM tap_horizon_receipts
+                WHERE signature = $1
+            "#,
+            encoded_signature
+        )
+        .fetch_one(pgpool)
+        .await?;
+        existing.id.try_into()?
+    };
     Ok(id)
 }
 
