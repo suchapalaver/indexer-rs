@@ -805,6 +805,23 @@ impl ActionExecutor {
             })?;
 
             let allocation_id = allocation_wallet.address();
+            let allocation_id_str = allocation_id.to_string();
+
+            // Skip IDs already present in the local action queue to avoid collisions on restart.
+            if Action::allocation_id_exists(
+                &self.pool,
+                &self.config.protocol_network,
+                &allocation_id_str,
+            )
+            .await?
+            {
+                debug!(
+                    allocation_id = %allocation_id,
+                    index = index,
+                    "Allocation ID already present in action queue, trying next index"
+                );
+                continue;
+            }
 
             // Check if this allocation ID is already in use on-chain
             let allocation = subgraph_service

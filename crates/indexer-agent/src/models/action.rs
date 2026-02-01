@@ -120,6 +120,26 @@ pub struct ActionFilter {
 const DUPLICATE_ACTION_INDEX: &str = "idx_one_pending_action_per_deployment";
 
 impl Action {
+    /// Check if an allocation ID is already present in the action queue for a protocol network.
+    pub async fn allocation_id_exists(
+        pool: &PgPool,
+        protocol_network: &str,
+        allocation_id: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let exists = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT 1 FROM "Actions"
+            WHERE allocation_id = $1 AND protocol_network = $2
+            LIMIT 1
+            "#,
+        )
+        .bind(allocation_id)
+        .bind(protocol_network)
+        .fetch_optional(pool)
+        .await?;
+
+        Ok(exists.is_some())
+    }
     /// Queue a new action.
     ///
     /// Returns `ActionError::DuplicatePendingAction` if a non-terminal action

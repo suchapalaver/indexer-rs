@@ -12,6 +12,7 @@
 //! - Business logic for allocation management
 //! - Input validation for identifiers and parameters
 
+pub mod amounts;
 pub mod error;
 pub mod executor;
 pub mod metrics;

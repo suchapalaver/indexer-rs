@@ -8,19 +8,17 @@
 //! - Closing allocations (collect + stopService)
 //! - Reallocating (close existing + open new)
 
-use std::str::FromStr;
-
 use alloy::{
     primitives::{Address, Bytes, FixedBytes, U256},
     sol,
     sol_types::{SolCall, SolValue},
 };
-use bigdecimal::{num_bigint::ToBigInt, BigDecimal, Signed};
 
 use super::{
     contracts::{PaymentType, SubgraphService},
     errors::ExecutorError,
 };
+use crate::amounts::parse_amount_wei;
 
 /// Gas buffer multiplier for allocation transactions.
 /// We add 30% to the estimated gas to account for state changes.
@@ -281,63 +279,10 @@ pub fn build_reallocate_tx(params: ReallocateParams) -> (Bytes, Bytes) {
 /// # Returns
 /// The amount in wei as U256
 pub fn parse_amount(amount: &str) -> Result<U256, ExecutorError> {
-    let amount = amount.trim();
-    if amount.is_empty() {
-        return Err(ExecutorError::InvalidAmount {
-            action_id: 0,
-            amount: amount.to_string(),
-            reason: "amount cannot be empty".to_string(),
-        });
-    }
-
-    // GRT decimals (or scientific notation) -> convert to wei using BigDecimal
-    if amount.contains('.') || amount.contains('e') || amount.contains('E') {
-        let grt = BigDecimal::from_str(amount).map_err(|e| ExecutorError::InvalidAmount {
-            action_id: 0,
-            amount: amount.to_string(),
-            reason: format!("invalid decimal amount: {e}"),
-        })?;
-
-        if grt.is_negative() {
-            return Err(ExecutorError::InvalidAmount {
-                action_id: 0,
-                amount: amount.to_string(),
-                reason: "amount cannot be negative".to_string(),
-            });
-        }
-
-        let scale = BigDecimal::from_str("1000000000000000000").expect("valid scale");
-        let wei = grt * scale;
-        let wei_int = wei
-            .to_bigint()
-            .ok_or_else(|| ExecutorError::InvalidAmount {
-                action_id: 0,
-                amount: amount.to_string(),
-                reason: "amount has fractional wei".to_string(),
-            })?;
-
-        return U256::from_str_radix(&wei_int.to_string(), 10).map_err(|e| {
-            ExecutorError::InvalidAmount {
-                action_id: 0,
-                amount: amount.to_string(),
-                reason: format!("amount out of range: {e}"),
-            }
-        });
-    }
-
-    // Integer -> wei (decimal or hex)
-    if let Some(hex) = amount.strip_prefix("0x") {
-        return U256::from_str_radix(hex, 16).map_err(|e| ExecutorError::InvalidAmount {
-            action_id: 0,
-            amount: amount.to_string(),
-            reason: format!("failed to parse hex wei: {e}"),
-        });
-    }
-
-    U256::from_str_radix(amount, 10).map_err(|e| ExecutorError::InvalidAmount {
+    parse_amount_wei(amount).map_err(|e| ExecutorError::InvalidAmount {
         action_id: 0,
-        amount: amount.to_string(),
-        reason: format!("failed to parse wei: {e}"),
+        amount: amount.trim().to_string(),
+        reason: e.reason,
     })
 }
 

@@ -7,14 +7,13 @@
 //! used in the indexer agent, including deployment IDs, protocol networks,
 //! and allocation amounts.
 
-use std::str::FromStr;
-
-use alloy::primitives::U256;
-use bigdecimal::{num_bigint::ToBigInt, BigDecimal, Signed};
 use thegraph_core::DeploymentId;
 use thiserror::Error;
 
-use crate::error::{ErrorClass, ErrorClassification};
+use crate::{
+    amounts::parse_amount_wei,
+    error::{ErrorClass, ErrorClassification},
+};
 
 /// Errors that can occur during input validation.
 #[derive(Debug, Error)]
@@ -194,36 +193,8 @@ pub fn validate_allocation_amount(amount: &str) -> Result<(), ValidationError> {
         ));
     }
 
-    // Check hex prefix first (before decimal/scientific check, since hex can contain 'e')
-    let value = if let Some(hex) = amount.strip_prefix("0x") {
-        U256::from_str_radix(hex, 16)
-            .map_err(|e| ValidationError::InvalidAmount(amount.to_string(), e.to_string()))?
-    } else if amount.contains('.') || amount.contains('e') || amount.contains('E') {
-        let grt = BigDecimal::from_str(amount)
-            .map_err(|e| ValidationError::InvalidAmount(amount.to_string(), e.to_string()))?;
-
-        if grt.is_negative() {
-            return Err(ValidationError::InvalidAmount(
-                amount.to_string(),
-                "amount cannot be negative".to_string(),
-            ));
-        }
-
-        let scale = BigDecimal::from_str("1000000000000000000").expect("valid scale");
-        let wei = grt * scale;
-        let wei_int = wei.to_bigint().ok_or_else(|| {
-            ValidationError::InvalidAmount(
-                amount.to_string(),
-                "amount has fractional wei".to_string(),
-            )
-        })?;
-
-        U256::from_str_radix(&wei_int.to_string(), 10)
-            .map_err(|e| ValidationError::InvalidAmount(amount.to_string(), e.to_string()))?
-    } else {
-        U256::from_str_radix(amount, 10)
-            .map_err(|e| ValidationError::InvalidAmount(amount.to_string(), e.to_string()))?
-    };
+    let value = parse_amount_wei(amount)
+        .map_err(|e| ValidationError::InvalidAmount(amount.to_string(), e.reason))?;
 
     if value.is_zero() {
         return Err(ValidationError::ZeroAmount);
@@ -501,6 +472,7 @@ mod tests {
         // Float notation
         assert!(validate_allocation_amount("1.5e18").is_ok());
         assert!(validate_allocation_amount("1000.0").is_ok());
+        assert!(validate_allocation_amount("1e-18").is_ok());
     }
 
     #[test]
@@ -523,6 +495,14 @@ mod tests {
         ));
         assert!(matches!(
             validate_allocation_amount(""),
+            Err(ValidationError::InvalidAmount(_, _))
+        ));
+        assert!(matches!(
+            validate_allocation_amount("1e-19"),
+            Err(ValidationError::InvalidAmount(_, _))
+        ));
+        assert!(matches!(
+            validate_allocation_amount("1.0000000000000000001"),
             Err(ValidationError::InvalidAmount(_, _))
         ));
     }
