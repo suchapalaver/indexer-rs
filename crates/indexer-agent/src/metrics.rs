@@ -72,6 +72,22 @@ pub static ACTIONS_COOLDOWN_SKIPPED_TOTAL: LazyLock<IntCounterVec> = LazyLock::n
     .expect("failed to register agent_actions_cooldown_skipped_total metric")
 });
 
+/// Total number of actions rejected due to invalid input.
+///
+/// This metric tracks validation failures that prevent an action from being queued.
+/// The reconciliation loop logs and skips these inputs to avoid stalling.
+///
+/// Labels:
+/// - `action_type`: "allocate", "unallocate", or "reallocate"
+pub static ACTIONS_INVALID_INPUT_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    register_int_counter_vec!(
+        "agent_actions_invalid_input_total",
+        "Total number of actions rejected due to invalid input",
+        &["action_type"]
+    )
+    .expect("failed to register agent_actions_invalid_input_total metric")
+});
+
 // =============================================================================
 // Executor Metrics
 // =============================================================================
@@ -187,6 +203,12 @@ pub fn record_action_queued(action_type: &str) {
 /// Record an action being skipped due to cooldown.
 pub fn record_action_cooldown_skip(action_type: &str) {
     ACTIONS_COOLDOWN_SKIPPED_TOTAL
+        .with_label_values(&[action_type])
+        .inc();
+}
+
+pub fn record_action_invalid_input(action_type: &str) {
+    ACTIONS_INVALID_INPUT_TOTAL
         .with_label_values(&[action_type])
         .inc();
 }

@@ -548,4 +548,91 @@ mod tests {
         .unwrap();
         assert_eq!(action.transaction.as_deref(), Some("0xabc"));
     }
+
+    #[tokio::test]
+    async fn test_action_queue_rejects_missing_amount() {
+        let test_db = setup_shared_test_db().await;
+        let pool = test_db.pool;
+
+        let input = ActionInput {
+            action_type: ActionType::Allocate,
+            deployment_id: "0x0000000000000000000000000000000000000000000000000000000000000001"
+                .to_string(),
+            allocation_id: None,
+            amount: None,
+            poi: None,
+            force: None,
+            source: "test".to_string(),
+            reason: "test".to_string(),
+            priority: Some(0),
+            protocol_network: "eip155:1".to_string(),
+            is_legacy: Some(false),
+            public_poi: None,
+            poi_block_number: None,
+        };
+
+        let err = Action::queue(&pool, input).await.unwrap_err();
+        assert!(matches!(
+            err,
+            ActionError::InvalidInput(ValidationError::MissingRequiredField { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_action_queue_rejects_missing_allocation_id() {
+        let test_db = setup_shared_test_db().await;
+        let pool = test_db.pool;
+
+        let input = ActionInput {
+            action_type: ActionType::Unallocate,
+            deployment_id: "0x0000000000000000000000000000000000000000000000000000000000000001"
+                .to_string(),
+            allocation_id: None,
+            amount: None,
+            poi: None,
+            force: None,
+            source: "test".to_string(),
+            reason: "test".to_string(),
+            priority: Some(0),
+            protocol_network: "eip155:1".to_string(),
+            is_legacy: Some(false),
+            public_poi: None,
+            poi_block_number: None,
+        };
+
+        let err = Action::queue(&pool, input).await.unwrap_err();
+        assert!(matches!(
+            err,
+            ActionError::InvalidInput(ValidationError::MissingRequiredField { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_action_queue_rejects_legacy() {
+        let test_db = setup_shared_test_db().await;
+        let pool = test_db.pool;
+
+        let input = ActionInput {
+            action_type: ActionType::Allocate,
+            deployment_id: "0x0000000000000000000000000000000000000000000000000000000000000001"
+                .to_string(),
+            allocation_id: None,
+            amount: Some("1".to_string()),
+            poi: None,
+            force: None,
+            source: "test".to_string(),
+            reason: "test".to_string(),
+            priority: Some(0),
+            protocol_network: "eip155:1".to_string(),
+            is_legacy: Some(true),
+            public_poi: None,
+            poi_block_number: None,
+        };
+
+        let err = Action::queue(&pool, input).await.unwrap_err();
+        assert!(matches!(
+            err,
+            ActionError::InvalidInput(ValidationError::LegacyActionNotSupported)
+        ));
+    }
 }

@@ -4,7 +4,7 @@
 //! Action queueing for allocation changes.
 
 use sqlx::PgPool;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::{
     metrics,
@@ -120,7 +120,13 @@ pub async fn queue_allocation_action(
             unreachable!("reconciliation should never queue legacy actions");
         }
         Err(ActionError::InvalidInput(e)) => {
-            return Err(sqlx::Error::Protocol(e.to_string()));
+            warn!(
+                deployment = %decision.deployment_id,
+                error = %e,
+                "Invalid action input, skipping allocation"
+            );
+            metrics::record_action_invalid_input("allocate");
+            return Ok(None);
         }
         Err(ActionError::Database(e)) => return Err(e),
     };
@@ -227,7 +233,14 @@ pub async fn queue_unallocation_action(
             return Ok(None);
         }
         Err(ActionError::InvalidInput(e)) => {
-            return Err(sqlx::Error::Protocol(e.to_string()));
+            warn!(
+                deployment = %deployment_id,
+                allocation = %allocation_id,
+                error = %e,
+                "Invalid action input, skipping unallocation"
+            );
+            metrics::record_action_invalid_input("unallocate");
+            return Ok(None);
         }
         Err(ActionError::Database(e)) => return Err(e),
     };
@@ -334,7 +347,14 @@ pub async fn queue_reallocation_action(
             return Ok(None);
         }
         Err(ActionError::InvalidInput(e)) => {
-            return Err(sqlx::Error::Protocol(e.to_string()));
+            warn!(
+                deployment = %deployment_id,
+                allocation = %allocation_id,
+                error = %e,
+                "Invalid action input, skipping reallocation"
+            );
+            metrics::record_action_invalid_input("reallocate");
+            return Ok(None);
         }
         Err(ActionError::Database(e)) => return Err(e),
     };
