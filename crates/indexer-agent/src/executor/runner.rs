@@ -580,7 +580,16 @@ impl ActionExecutor {
         // This could be optimized with batching in the future
 
         // Execute unallocate
-        let _unallocate_hash = self.execute_unallocate(action, provider).await?;
+        let unallocate_hash = self.execute_unallocate(action, provider).await?;
+
+        // Record unallocate tx hash for auditability
+        Action::set_unallocate_transaction(
+            &self.pool,
+            action.id,
+            &self.config.protocol_network,
+            &unallocate_hash,
+        )
+        .await?;
 
         // Execute allocate with new amount
         match self.execute_allocate(action, provider).await {
@@ -590,6 +599,7 @@ impl ActionExecutor {
                     action_id = action.id,
                     deployment = %action.deployment_id,
                     error = %e,
+                    unallocate_tx = %unallocate_hash,
                     "Reallocate partial failure: unallocate succeeded but allocate failed"
                 );
                 metrics::record_reallocate_partial_failure();
@@ -1338,6 +1348,7 @@ mod tests {
             source: "test".to_string(),
             reason: "test".to_string(),
             transaction: None,
+            unallocate_transaction: None,
             failure_reason: None,
             protocol_network: "eip155:1".to_string(),
             is_legacy: false,

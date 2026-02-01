@@ -103,6 +103,7 @@ pub struct Action {
     pub source: String,
     pub reason: String,
     pub transaction: Option<String>,
+    pub unallocate_transaction: Option<String>,
     pub failure_reason: Option<String>,
     pub protocol_network: String,
     /// Whether this is a legacy (V1) allocation. Always false for this agent.
@@ -128,6 +129,7 @@ impl From<AgentAction> for Action {
             source: action.source,
             reason: action.reason,
             transaction: action.transaction,
+            unallocate_transaction: action.unallocate_transaction,
             failure_reason: action.failure_reason,
             protocol_network: action.protocol_network,
             is_legacy: action.is_legacy,

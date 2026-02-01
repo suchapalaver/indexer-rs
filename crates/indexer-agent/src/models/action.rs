@@ -98,6 +98,7 @@ pub struct Action {
     pub source: String,
     pub reason: String,
     pub transaction: Option<String>,
+    pub unallocate_transaction: Option<String>,
     pub failure_reason: Option<String>,
     pub protocol_network: String,
     pub is_legacy: bool,
@@ -413,6 +414,31 @@ impl Action {
         .await
     }
 
+    /// Record the unallocate transaction hash for a reallocate action.
+    ///
+    /// This hash is immutable once set to preserve auditability.
+    pub async fn set_unallocate_transaction(
+        pool: &PgPool,
+        id: i32,
+        protocol_network: &str,
+        transaction: &str,
+    ) -> Result<Self, sqlx::Error> {
+        sqlx::query_as::<_, Self>(
+            r#"
+            UPDATE "Actions"
+            SET unallocate_transaction = COALESCE(unallocate_transaction, $3),
+                updated_at = NOW()
+            WHERE id = $1 AND protocol_network = $2
+            RETURNING *
+            "#,
+        )
+        .bind(id)
+        .bind(protocol_network)
+        .bind(transaction)
+        .fetch_one(pool)
+        .await
+    }
+
     /// Delete actions
     pub async fn delete(
         pool: &PgPool,
@@ -482,6 +508,7 @@ impl Action {
 #[cfg(test)]
 mod tests {
     use test_assets::setup_shared_test_db;
+    use thegraph_core::allocation_id;
 
     use super::*;
 
@@ -550,6 +577,43 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(action.transaction.as_deref(), Some("0xabc"));
+    }
+
+    #[tokio::test]
+    async fn test_action_unallocate_transaction_immutable() {
+        let test_db = setup_shared_test_db().await;
+        let pool = test_db.pool;
+
+        let input = ActionInput {
+            action_type: ActionType::Reallocate,
+            deployment_id: "0x0000000000000000000000000000000000000000000000000000000000000001"
+                .to_string(),
+            allocation_id: Some(allocation_id!("0000000000000000000000000000000000000002").to_string()),
+            amount: Some("1".to_string()),
+            poi: None,
+            force: None,
+            source: "test".to_string(),
+            reason: "test".to_string(),
+            priority: Some(0),
+            protocol_network: "eip155:1".to_string(),
+            is_legacy: Some(false),
+            public_poi: None,
+            poi_block_number: None,
+        };
+
+        let action = Action::queue(&pool, input).await.unwrap();
+
+        let action =
+            Action::set_unallocate_transaction(&pool, action.id, &action.protocol_network, "0xabc")
+                .await
+                .unwrap();
+        assert_eq!(action.unallocate_transaction.as_deref(), Some("0xabc"));
+
+        let action =
+            Action::set_unallocate_transaction(&pool, action.id, &action.protocol_network, "0xdef")
+                .await
+                .unwrap();
+        assert_eq!(action.unallocate_transaction.as_deref(), Some("0xabc"));
     }
 
     #[tokio::test]

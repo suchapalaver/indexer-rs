@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS "Actions" (
     source VARCHAR NOT NULL,
     reason VARCHAR NOT NULL,
     transaction VARCHAR,
+    unallocate_transaction VARCHAR,
     failure_reason VARCHAR(1000),
     protocol_network VARCHAR(50) NOT NULL,
     is_legacy BOOLEAN NOT NULL DEFAULT true,
