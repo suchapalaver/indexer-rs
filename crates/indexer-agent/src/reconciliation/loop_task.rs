@@ -172,10 +172,21 @@ async fn run_reconciliation_cycle(
         );
     }
 
-    // Get current state from watchers
-    let deployments = deployments_rx.borrow().clone();
-    let allocations = allocations_rx.borrow().clone();
-    let current_epoch = *epoch_rx.borrow();
+    // Get current state from watchers, retry once if epoch ticks mid-read.
+    let (deployments, allocations, current_epoch) = {
+        let epoch_before = *epoch_rx.borrow();
+        let deployments = deployments_rx.borrow().clone();
+        let allocations = allocations_rx.borrow().clone();
+        let epoch_after = *epoch_rx.borrow();
+        if epoch_before != epoch_after {
+            let deployments = deployments_rx.borrow().clone();
+            let allocations = allocations_rx.borrow().clone();
+            let current_epoch = *epoch_rx.borrow();
+            (deployments, allocations, current_epoch)
+        } else {
+            (deployments, allocations, epoch_before)
+        }
+    };
 
     if deployments.is_empty() {
         warn!("No network deployments available, skipping reconciliation");
