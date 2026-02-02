@@ -1413,4 +1413,67 @@ mod tests {
             other => panic!("unexpected error: {other}"),
         }
     }
+
+    #[tokio::test]
+    async fn test_resolve_poi_explicit_bypasses_resolver() {
+        use alloy::primitives::B256;
+
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://user@localhost/db")
+            .expect("connect_lazy should not error");
+        let provider_cache = Arc::new(ProviderCache::new("http://localhost:8545".to_string()));
+        let signer = PrivateKeySigner::random();
+        let config = ExecutorConfig {
+            protocol_network: "eip155:1".to_string(),
+            chain_id: 1,
+            ..ExecutorConfig::default()
+        };
+        let (_epoch_tx, epoch_rx) = watch::channel(0u64);
+        let executor = ActionExecutor::new(pool, provider_cache, signer, config, epoch_rx);
+
+        let action = Action {
+            id: 1,
+            action_type: ActionType::Unallocate,
+            status: ActionStatus::Queued,
+            priority: Some(0),
+            deployment_id: "0x0000000000000000000000000000000000000000000000000000000000000001"
+                .to_string(),
+            allocation_id: Some(
+                allocation_id!("1234567890123456789012345678901234567890").to_string(),
+            ),
+            amount: None,
+            poi: Some(
+                "0x00000000000000000000000000000000000000000000000000000000000000aa".to_string(),
+            ),
+            force: None,
+            source: "test".to_string(),
+            reason: "test".to_string(),
+            transaction: None,
+            unallocate_transaction: None,
+            failure_reason: None,
+            protocol_network: "eip155:1".to_string(),
+            is_legacy: false,
+            public_poi: Some(
+                "0x00000000000000000000000000000000000000000000000000000000000000bb".to_string(),
+            ),
+            poi_block_number: Some(123),
+            created_at: None,
+            updated_at: None,
+        };
+
+        let deployment_id: DeploymentId = action.deployment_id.parse().unwrap();
+        let (poi, block, public_poi) = executor
+            .resolve_poi_for_action(&action, &deployment_id)
+            .await
+            .expect("explicit POI should resolve");
+
+        let expected_poi =
+            ProofOfIndexing::from(action.poi.as_ref().unwrap().parse::<B256>().unwrap());
+        let expected_public =
+            ProofOfIndexing::from(action.public_poi.as_ref().unwrap().parse::<B256>().unwrap());
+
+        assert_eq!(poi, expected_poi);
+        assert_eq!(block, BlockNumber::from(123u64));
+        assert_eq!(public_poi, Some(expected_public));
+    }
 }
