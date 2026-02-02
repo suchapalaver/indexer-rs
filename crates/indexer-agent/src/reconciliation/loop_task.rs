@@ -9,7 +9,7 @@
 use std::time::{Duration, Instant};
 
 use sqlx::PgPool;
-use thegraph_core::alloy::primitives::Address;
+use thegraph_core::IndexerId;
 use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
 
@@ -72,7 +72,7 @@ impl Default for ReconciliationConfig {
 /// # Arguments
 ///
 /// * `pool` - Database connection pool
-/// * `indexer_address` - The indexer's address
+/// * `indexer_id` - The indexer's address
 /// * `config` - Reconciliation configuration
 /// * `deployments_rx` - Watch receiver for network deployment data
 /// * `allocations_rx` - Watch receiver for active allocations
@@ -80,7 +80,7 @@ impl Default for ReconciliationConfig {
 /// * `shutdown_rx` - Watch receiver for shutdown signal
 pub async fn run_reconciliation_loop(
     pool: PgPool,
-    indexer_address: Address,
+    indexer_id: IndexerId,
     config: ReconciliationConfig,
     deployments_rx: watch::Receiver<Vec<NetworkDeploymentData>>,
     allocations_rx: watch::Receiver<Vec<ActiveAllocation>>,
@@ -103,7 +103,7 @@ pub async fn run_reconciliation_loop(
                 let start = Instant::now();
                 let result = run_reconciliation_cycle(
                     &pool,
-                    indexer_address,
+                    indexer_id,
                     &config,
                     &deployments_rx,
                     &allocations_rx,
@@ -134,7 +134,7 @@ pub async fn run_reconciliation_loop(
 /// Run a single reconciliation cycle.
 async fn run_reconciliation_cycle(
     pool: &PgPool,
-    indexer_address: Address,
+    indexer_id: IndexerId,
     config: &ReconciliationConfig,
     deployments_rx: &watch::Receiver<Vec<NetworkDeploymentData>>,
     allocations_rx: &watch::Receiver<Vec<ActiveAllocation>>,
@@ -203,7 +203,7 @@ async fn run_reconciliation_cycle(
     // Create context for this cycle
     let ctx = ReconciliationContext::new(
         pool.clone(),
-        indexer_address,
+        indexer_id,
         config.protocol_network.clone(),
         current_epoch,
         config.max_allocation_epochs,
@@ -252,7 +252,7 @@ async fn run_reconciliation_cycle(
 #[allow(clippy::too_many_arguments)]
 pub async fn reconcile_once(
     pool: &PgPool,
-    indexer_address: Address,
+    indexer_id: IndexerId,
     protocol_network: &str,
     current_epoch: u64,
     max_allocation_epochs: u64,
@@ -262,7 +262,7 @@ pub async fn reconcile_once(
 ) -> Result<Vec<Action>, anyhow::Error> {
     reconcile_once_with_cooldown(
         pool,
-        indexer_address,
+        indexer_id,
         protocol_network,
         current_epoch,
         max_allocation_epochs,
@@ -280,7 +280,7 @@ pub async fn reconcile_once(
 #[allow(clippy::too_many_arguments)]
 pub async fn reconcile_once_with_cooldown(
     pool: &PgPool,
-    indexer_address: Address,
+    indexer_id: IndexerId,
     protocol_network: &str,
     current_epoch: u64,
     max_allocation_epochs: u64,
@@ -302,7 +302,7 @@ pub async fn reconcile_once_with_cooldown(
     // Create context
     let ctx = ReconciliationContext::new(
         pool.clone(),
-        indexer_address,
+        indexer_id,
         protocol_network.to_string(),
         current_epoch,
         max_allocation_epochs,

@@ -292,8 +292,9 @@ pub fn validate_not_legacy(is_legacy: Option<bool>) -> Result<(), ValidationErro
 /// # Examples
 /// ```
 /// use indexer_agent::validation::validate_allocation_id;
+/// use thegraph_core::allocation_id;
 ///
-/// assert!(validate_allocation_id("0x1234567890123456789012345678901234567890").is_ok());
+/// assert!(validate_allocation_id(&allocation_id!("1234567890123456789012345678901234567890").to_string()).is_ok());
 /// assert!(validate_allocation_id("invalid").is_err());
 /// ```
 pub fn validate_allocation_id(allocation_id: &str) -> Result<(), ValidationError> {
@@ -462,7 +463,13 @@ fn validate_poi_hash(poi: &str) -> Result<(), ValidationError> {
 
 #[cfg(test)]
 mod tests {
+    use thegraph_core::allocation_id;
+
     use super::*;
+
+    fn valid_allocation_id() -> String {
+        allocation_id!("1234567890123456789012345678901234567890").to_string()
+    }
 
     #[test]
     fn test_validate_deployment_id_ipfs() {
@@ -619,12 +626,17 @@ mod tests {
 
     #[test]
     fn test_validate_allocation_id_valid() {
+        let allocation_id = valid_allocation_id();
+        let allocation_id_upper = allocation_id.to_uppercase();
+        let allocation_id_alt =
+            allocation_id!("abcdef0123456789abcdef0123456789abcdef01").to_string();
+
         // Valid allocation IDs
-        assert!(validate_allocation_id("0x1234567890123456789012345678901234567890").is_ok());
-        assert!(validate_allocation_id("0xabcdef0123456789abcdef0123456789abcdef01").is_ok());
-        assert!(validate_allocation_id("0xABCDEF0123456789ABCDEF0123456789ABCDEF01").is_ok());
+        assert!(validate_allocation_id(&allocation_id).is_ok());
+        assert!(validate_allocation_id(&allocation_id_alt).is_ok());
+        assert!(validate_allocation_id(&allocation_id_upper).is_ok());
         // With whitespace
-        assert!(validate_allocation_id("  0x1234567890123456789012345678901234567890  ").is_ok());
+        assert!(validate_allocation_id(&format!("  {allocation_id}  ")).is_ok());
     }
 
     #[test]
@@ -721,14 +733,14 @@ mod tests {
     fn test_validate_action_input_unallocate() {
         let deployment = "QmSWxvd8SaQK6qZKJ7xtfxCCGoRzGnoi2WNzmJYYJW9BXY";
         let network = "eip155:42161";
-        let allocation_id = "0x1234567890123456789012345678901234567890";
+        let allocation_id = valid_allocation_id();
 
         // Valid unallocate action
         assert!(validate_action_input(
             "unallocate",
             deployment,
             network,
-            Some(allocation_id),
+            Some(&allocation_id),
             None,
             None,
             None,
@@ -777,14 +789,14 @@ mod tests {
     fn test_validate_action_input_reallocate() {
         let deployment = "QmSWxvd8SaQK6qZKJ7xtfxCCGoRzGnoi2WNzmJYYJW9BXY";
         let network = "eip155:42161";
-        let allocation_id = "0x1234567890123456789012345678901234567890";
+        let allocation_id = valid_allocation_id();
 
         // Valid reallocate action
         assert!(validate_action_input(
             "reallocate",
             deployment,
             network,
-            Some(allocation_id),
+            Some(&allocation_id),
             Some("1000000000000000000"),
             None,
             None,
@@ -818,7 +830,7 @@ mod tests {
                 "reallocate",
                 deployment,
                 network,
-                Some(allocation_id),
+                Some(&allocation_id),
                 None,
                 None,
                 None,
@@ -834,7 +846,7 @@ mod tests {
 
     #[test]
     fn test_validate_action_input_common_validations() {
-        let allocation_id = "0x1234567890123456789012345678901234567890";
+        let allocation_id = valid_allocation_id();
 
         // Invalid deployment ID
         assert!(matches!(
@@ -874,7 +886,7 @@ mod tests {
                 "unallocate",
                 "QmSWxvd8SaQK6qZKJ7xtfxCCGoRzGnoi2WNzmJYYJW9BXY",
                 "eip155:42161",
-                Some(allocation_id),
+                Some(&allocation_id),
                 None,
                 None,
                 None,
@@ -889,7 +901,7 @@ mod tests {
     fn test_validate_poi_fields() {
         let deployment = "QmSWxvd8SaQK6qZKJ7xtfxCCGoRzGnoi2WNzmJYYJW9BXY";
         let network = "eip155:42161";
-        let allocation_id = "0x1234567890123456789012345678901234567890";
+        let allocation_id = valid_allocation_id();
         let poi = "0x0000000000000000000000000000000000000000000000000000000000000001";
         let public_poi = "0x0000000000000000000000000000000000000000000000000000000000000002";
 
@@ -898,7 +910,7 @@ mod tests {
                 "unallocate",
                 deployment,
                 network,
-                Some(allocation_id),
+                Some(&allocation_id),
                 None,
                 Some(poi),
                 None,
@@ -913,7 +925,7 @@ mod tests {
                 "unallocate",
                 deployment,
                 network,
-                Some(allocation_id),
+                Some(&allocation_id),
                 None,
                 None,
                 None,
@@ -928,7 +940,7 @@ mod tests {
                 "unallocate",
                 deployment,
                 network,
-                Some(allocation_id),
+                Some(&allocation_id),
                 None,
                 None,
                 Some(public_poi),
@@ -943,7 +955,7 @@ mod tests {
                 "unallocate",
                 deployment,
                 network,
-                Some(allocation_id),
+                Some(&allocation_id),
                 None,
                 Some("invalid"),
                 None,
@@ -958,7 +970,7 @@ mod tests {
                 "unallocate",
                 deployment,
                 network,
-                Some(allocation_id),
+                Some(&allocation_id),
                 None,
                 Some(poi),
                 None,
@@ -972,7 +984,7 @@ mod tests {
             "unallocate",
             deployment,
             network,
-            Some(allocation_id),
+            Some(&allocation_id),
             None,
             Some(poi),
             Some(public_poi),

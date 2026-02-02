@@ -121,11 +121,12 @@ async fn query_escrow_check_transactions(
 #[cfg(test)]
 mod tests {
     use indexer_monitor::{DeploymentDetails, SubgraphClient};
+    use thegraph_core::allocation_id;
 
     #[tokio::test]
     async fn test_transaction_exists() {
         // testnet values
-        let allocation_id = "0x43f8ebe0b6181117eb2dcf8ec7d4e894fca060b8";
+        let allocation_id = allocation_id!("43f8ebe0b6181117eb2dcf8ec7d4e894fca060b8").into_inner();
         let sender_address = "0x21fed3c4340f67dbf2b78c670ebd1940668ca03e";
         let indexer_address = "0x54d7db28ce0d0e2e87764cd09298f9e4e913e567";
 
@@ -140,7 +141,7 @@ mod tests {
         ));
 
         let result = super::query_escrow_check_transactions(
-            allocation_id.parse().unwrap(),
+            allocation_id,
             sender_address.parse().unwrap(),
             indexer_address.parse().unwrap(),
             escrow_subgraph,

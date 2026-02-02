@@ -9,10 +9,11 @@
 //! - Reallocating (close existing + open new)
 
 use alloy::{
-    primitives::{Address, BlockNumber, Bytes, FixedBytes, U256},
+    primitives::{Address, BlockNumber, Bytes, FixedBytes, B256, U256},
     sol,
     sol_types::{SolCall, SolValue},
 };
+use thegraph_core::ProofOfIndexing;
 
 use super::{
     contracts::{PaymentType, SubgraphService},
@@ -86,9 +87,10 @@ pub fn encode_start_service_data(
 /// * `metadata` - POI metadata (encoded)
 pub fn encode_collect_indexing_rewards_data(
     allocation_id: Address,
-    poi: FixedBytes<32>,
+    poi: ProofOfIndexing,
     metadata: Bytes,
 ) -> Bytes {
+    let poi: FixedBytes<32> = B256::from(poi);
     let data = CollectIndexingRewardsData {
         allocationId: allocation_id,
         poi,
@@ -105,12 +107,13 @@ pub fn encode_collect_indexing_rewards_data(
 /// * `indexing_status` - Optional indexing status string
 pub fn encode_poi_metadata(
     block_number: BlockNumber,
-    public_poi: Option<FixedBytes<32>>,
+    public_poi: Option<ProofOfIndexing>,
     indexing_status: Option<&str>,
 ) -> Bytes {
+    let public_poi: FixedBytes<32> = public_poi.map(B256::from).unwrap_or_default();
     let data = POIMetadata {
         blockNumber: U256::from(block_number),
-        publicPoi: public_poi.unwrap_or_default(),
+        publicPoi: public_poi,
         indexingStatus: indexing_status.unwrap_or_default().to_string(),
         reserved1: U256::ZERO,
         reserved2: U256::ZERO,
@@ -173,9 +176,9 @@ pub fn build_allocate_tx(
 pub fn build_unallocate_tx(
     indexer: Address,
     allocation_id: Address,
-    poi: FixedBytes<32>,
+    poi: ProofOfIndexing,
     poi_block_number: BlockNumber,
-    public_poi: Option<FixedBytes<32>>,
+    public_poi: Option<ProofOfIndexing>,
     is_over_allocated: bool,
 ) -> Bytes {
     let metadata = encode_poi_metadata(poi_block_number, public_poi, None);
@@ -222,7 +225,7 @@ pub struct ReallocateParams {
     /// The allocation ID to close
     pub old_allocation_id: Address,
     /// Proof of Indexing for the old allocation
-    pub poi: FixedBytes<32>,
+    pub poi: ProofOfIndexing,
     /// The block number for the Proof of Indexing (POI)
     pub poi_block_number: BlockNumber,
     /// The deployment ID (same as old allocation)
@@ -343,7 +346,7 @@ mod tests {
     fn test_build_unallocate_tx_over_allocated() {
         let indexer = Address::ZERO;
         let allocation_id = Address::ZERO;
-        let poi = FixedBytes::ZERO;
+        let poi = ProofOfIndexing::ZERO;
 
         let tx = build_unallocate_tx(
             indexer,
@@ -360,7 +363,7 @@ mod tests {
     fn test_build_unallocate_tx_normal() {
         let indexer = Address::ZERO;
         let allocation_id = Address::ZERO;
-        let poi = FixedBytes::ZERO;
+        let poi = ProofOfIndexing::ZERO;
 
         let tx = build_unallocate_tx(
             indexer,

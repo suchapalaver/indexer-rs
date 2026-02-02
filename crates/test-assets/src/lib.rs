@@ -296,6 +296,95 @@ pub static INDEXER_ALLOCATIONS: LazyLock<HashMap<Address, Allocation>> = LazyLoc
     ])
 });
 
+#[cfg(test)]
+mod guardrails {
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
+
+    fn should_skip_dir(path: &Path) -> bool {
+        matches!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some(".git" | ".cargo" | "target" | "node_modules" | ".idea" | ".vscode")
+        )
+    }
+
+    fn collect_rs_files(root: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+        for entry in fs::read_dir(root)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                if should_skip_dir(&path) {
+                    continue;
+                }
+                collect_rs_files(&path, out)?;
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    fn has_collection_id_hex_literal(line: &str) -> bool {
+        if !line.contains("collection_id") {
+            return false;
+        }
+        let mut rest = line;
+        while let Some(start) = rest.find("\"0x") {
+            let after = &rest[start + 3..];
+            let mut hex_len = 0usize;
+            for ch in after.chars() {
+                if ch == '"' {
+                    break;
+                }
+                if ch.is_ascii_hexdigit() {
+                    hex_len += 1;
+                    continue;
+                }
+                hex_len = 0;
+                break;
+            }
+            if hex_len == 64 {
+                return true;
+            }
+            rest = after;
+        }
+        false
+    }
+
+    #[test]
+    fn collection_id_literals_use_macro() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("repo root");
+        let mut files = Vec::new();
+        collect_rs_files(root, &mut files).expect("read repo files");
+
+        let mut offenders = Vec::new();
+        for path in files {
+            let contents = fs::read_to_string(&path).unwrap_or_default();
+            for (line_no, line) in contents.lines().enumerate() {
+                if has_collection_id_hex_literal(line) {
+                    offenders.push(format!(
+                        "{}:{}:{}",
+                        path.display(),
+                        line_no + 1,
+                        line.trim()
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "Use collection_id!(...) for collection ID literals. Offenders:\n{}",
+            offenders.join("\n")
+        );
+    }
+}
+
 pub static ESCROW_ACCOUNTS_BALANCES: LazyLock<HashMap<Address, U256>> = LazyLock::new(|| {
     HashMap::from([
         (

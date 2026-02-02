@@ -588,7 +588,9 @@ mod tests {
             action_type: ActionType::Reallocate,
             deployment_id: "0x0000000000000000000000000000000000000000000000000000000000000001"
                 .to_string(),
-            allocation_id: Some(allocation_id!("0000000000000000000000000000000000000002").to_string()),
+            allocation_id: Some(
+                allocation_id!("0000000000000000000000000000000000000002").to_string(),
+            ),
             amount: Some("1".to_string()),
             poi: None,
             force: None,

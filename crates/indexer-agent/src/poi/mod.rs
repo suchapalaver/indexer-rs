@@ -14,10 +14,10 @@
 //! let poi_result = poi_resolver.resolve_poi(&deployment_id, block_number).await?;
 //! ```
 
-use alloy::primitives::{BlockNumber, FixedBytes};
+use alloy::primitives::{BlockNumber, B256};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use thegraph_core::DeploymentId;
+use thegraph_core::{DeploymentId, ProofOfIndexing};
 use tracing::{debug, warn};
 use url::Url;
 
@@ -31,7 +31,7 @@ pub struct PoiResult {
     /// The block number for the POI
     pub block_number: BlockNumber,
     /// The public POI hash (bytes32)
-    pub public_poi: FixedBytes<32>,
+    pub public_poi: ProofOfIndexing,
 }
 
 /// Errors that can occur during POI resolution.
@@ -339,9 +339,10 @@ impl PoiResolver {
             })?;
 
         // Parse the POI hash (should be a hex string starting with 0x)
-        let public_poi: FixedBytes<32> = poi_result
+        let public_poi: ProofOfIndexing = poi_result
             .proof_of_indexing
-            .parse()
+            .parse::<B256>()
+            .map(ProofOfIndexing::from)
             .map_err(|e| PoiError::ParseError(format!("invalid POI hash: {e}")))?;
 
         // Parse the block number from response
@@ -426,11 +427,11 @@ mod tests {
         let poi = PoiResult {
             deployment: "QmSWxvd8SaQK6qZKJ7xtfxCCGoRzGnoi2WNzmJYYJW9BXY".to_string(),
             block_number: BlockNumber::from(12_345_678u64),
-            public_poi: FixedBytes::ZERO,
+            public_poi: ProofOfIndexing::ZERO,
         };
 
         assert_eq!(poi.block_number, BlockNumber::from(12_345_678u64));
-        assert_eq!(poi.public_poi, FixedBytes::ZERO);
+        assert_eq!(poi.public_poi, ProofOfIndexing::ZERO);
     }
 
     #[test]

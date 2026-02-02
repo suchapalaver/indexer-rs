@@ -10,7 +10,7 @@ use std::{
 
 use alloy::{
     network::TransactionBuilder,
-    primitives::{Address, BlockNumber, Bytes, FixedBytes, U256},
+    primitives::{Address, BlockNumber, Bytes, FixedBytes, B256, U256},
     providers::Provider,
     rpc::types::TransactionRequest,
     signers::{local::PrivateKeySigner, Signer},
@@ -18,7 +18,7 @@ use alloy::{
 };
 use bip39::Mnemonic;
 use sqlx::PgPool;
-use thegraph_core::DeploymentId;
+use thegraph_core::{DeploymentId, IndexerId, ProofOfIndexing};
 use tokio::{sync::watch, time::interval};
 use tracing::{debug, error, info, warn};
 use url::Url;
@@ -73,7 +73,7 @@ pub struct ExecutorConfig {
     pub controller_address: Address,
 
     /// The indexer's address
-    pub indexer_address: Address,
+    pub indexer_id: IndexerId,
 
     /// Protocol network identifier (e.g., "eip155:42161")
     pub protocol_network: String,
@@ -103,7 +103,7 @@ impl Default for ExecutorConfig {
             subgraph_service_address: Address::ZERO,
             horizon_staking_address: Address::ZERO,
             controller_address: Address::ZERO,
-            indexer_address: Address::ZERO,
+            indexer_id: IndexerId::new(Address::ZERO),
             protocol_network: String::new(),
             chain_id: 0,
             operator_mnemonic: None,
@@ -377,7 +377,7 @@ impl ActionExecutor {
 
         // Build transaction
         let calldata = build_allocate_tx(
-            self.config.indexer_address,
+            self.config.indexer_id.into_inner(),
             deployment_id,
             tokens,
             allocation_id,
@@ -442,7 +442,7 @@ impl ActionExecutor {
         // Check if over-allocated
         let contract = SubgraphService::new(self.config.subgraph_service_address, provider);
         let is_over_allocated = contract
-            .isOverAllocated(self.config.indexer_address)
+            .isOverAllocated(self.config.indexer_id.into_inner())
             .call()
             .await
             .map_err(|e| {
@@ -451,7 +451,7 @@ impl ActionExecutor {
 
         // Build transaction
         let calldata = build_unallocate_tx(
-            self.config.indexer_address,
+            self.config.indexer_id.into_inner(),
             allocation_id,
             poi,
             poi_block_number,
@@ -479,11 +479,12 @@ impl ActionExecutor {
         &self,
         action: &Action,
         deployment: &DeploymentId,
-    ) -> Result<(FixedBytes<32>, BlockNumber, Option<FixedBytes<32>>), ExecutorError> {
+    ) -> Result<(ProofOfIndexing, BlockNumber, Option<ProofOfIndexing>), ExecutorError> {
         // Case 1: Explicit POI provided in action (from Management API or manual queue)
         if let Some(poi_str) = &action.poi {
-            let poi: FixedBytes<32> = poi_str
-                .parse()
+            let poi: ProofOfIndexing = poi_str
+                .parse::<B256>()
+                .map(ProofOfIndexing::from)
                 .map_err(|e| ExecutorError::TransactionBuild(format!("invalid POI: {e}")))?;
 
             let Some(block_number_raw) = action.poi_block_number else {
@@ -502,9 +503,14 @@ impl ActionExecutor {
 
             // Parse public_poi if provided
             let public_poi = if let Some(public_poi_str) = &action.public_poi {
-                Some(public_poi_str.parse().map_err(|e| {
-                    ExecutorError::TransactionBuild(format!("invalid public POI: {e}"))
-                })?)
+                Some(
+                    public_poi_str
+                        .parse::<B256>()
+                        .map(ProofOfIndexing::from)
+                        .map_err(|e| {
+                            ExecutorError::TransactionBuild(format!("invalid public POI: {e}"))
+                        })?,
+                )
             } else {
                 None
             };
@@ -526,7 +532,7 @@ impl ActionExecutor {
                 deployment = %deployment,
                 "Force closing allocation with zero POI - indexing rewards will be forfeited"
             );
-            return Ok((FixedBytes::ZERO, BlockNumber::from(0u64), None));
+            return Ok((ProofOfIndexing::ZERO, BlockNumber::from(0u64), None));
         }
 
         // Case 3: Resolve POI from graph-node
@@ -948,7 +954,7 @@ impl ActionExecutor {
 
         // Create the allocation proof struct
         let proof_data = AllocationIdProof {
-            indexer: self.config.indexer_address,
+            indexer: self.config.indexer_id.into_inner(),
             allocationId: allocation_id,
         };
 
@@ -986,7 +992,7 @@ impl ActionExecutor {
         // Check if the operator is authorized for the indexer on the SubgraphService
         let is_authorized = staking
             .isAuthorized(
-                self.config.indexer_address,
+                self.config.indexer_id.into_inner(),
                 operator_address,
                 self.config.subgraph_service_address,
             )
@@ -996,19 +1002,19 @@ impl ActionExecutor {
 
         if !is_authorized {
             warn!(
-                indexer = %self.config.indexer_address,
+                indexer = %self.config.indexer_id,
                 operator = %operator_address,
                 verifier = %self.config.subgraph_service_address,
                 "Operator is not authorized for indexer"
             );
             return Err(ExecutorError::UnauthorizedOperator {
-                indexer: self.config.indexer_address,
+                indexer: self.config.indexer_id.into_inner(),
                 operator: operator_address,
             });
         }
 
         debug!(
-            indexer = %self.config.indexer_address,
+            indexer = %self.config.indexer_id,
             operator = %operator_address,
             "Operator authorization verified"
         );
@@ -1089,16 +1095,16 @@ impl ActionExecutor {
         }
 
         // Check indexer matches
-        if allocation.indexer != self.config.indexer_address {
+        if allocation.indexer != self.config.indexer_id.into_inner() {
             warn!(
                 allocation_id = %allocation_id,
-                expected_indexer = %self.config.indexer_address,
+                expected_indexer = %self.config.indexer_id,
                 actual_indexer = %allocation.indexer,
                 "Allocation belongs to different indexer"
             );
             return Err(ExecutorError::AllocationIndexerMismatch {
                 allocation_id,
-                expected_indexer: self.config.indexer_address,
+                expected_indexer: self.config.indexer_id.into_inner(),
                 actual_indexer: allocation.indexer,
             });
         }
@@ -1157,6 +1163,7 @@ fn parse_deployment_id(deployment_id: &str) -> Result<FixedBytes<32>, ExecutorEr
 #[cfg(test)]
 mod tests {
     use sqlx::postgres::PgPoolOptions;
+    use thegraph_core::allocation_id;
 
     use super::*;
 
@@ -1167,7 +1174,7 @@ mod tests {
         assert_eq!(config.subgraph_service_address, Address::ZERO);
         assert_eq!(config.horizon_staking_address, Address::ZERO);
         assert_eq!(config.controller_address, Address::ZERO);
-        assert_eq!(config.indexer_address, Address::ZERO);
+        assert_eq!(config.indexer_id.into_inner(), Address::ZERO);
         assert!(config.max_gas_price_gwei.is_none());
         assert_eq!(config.gas_price_wait_timeout_secs, 300);
         assert!(config.graph_node_status_url.is_none());
@@ -1339,7 +1346,9 @@ mod tests {
             priority: Some(0),
             deployment_id: "0x0000000000000000000000000000000000000000000000000000000000000001"
                 .to_string(),
-            allocation_id: Some("0x1234567890123456789012345678901234567890".to_string()),
+            allocation_id: Some(
+                allocation_id!("1234567890123456789012345678901234567890").to_string(),
+            ),
             amount: None,
             poi: Some(
                 "0x0000000000000000000000000000000000000000000000000000000000000001".to_string(),

@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use sqlx::PgPool;
-use thegraph_core::alloy::primitives::Address;
+use thegraph_core::{alloy::primitives::Address, IndexerId};
 
 use crate::{models::IndexingRule, rules::PreprocessedRules};
 
@@ -18,7 +18,7 @@ pub struct ReconciliationContext {
     /// Database connection pool for queuing actions
     pub pool: PgPool,
     /// The indexer's address
-    pub indexer_address: Address,
+    pub indexer_id: IndexerId,
     /// Protocol network identifier (CAIP-2 format, e.g., "eip155:1")
     pub protocol_network: String,
     /// Current epoch number from the network
@@ -36,7 +36,7 @@ impl ReconciliationContext {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         pool: PgPool,
-        indexer_address: Address,
+        indexer_id: IndexerId,
         protocol_network: String,
         current_epoch: u64,
         max_allocation_epochs: u64,
@@ -45,7 +45,7 @@ impl ReconciliationContext {
     ) -> Self {
         Self {
             pool,
-            indexer_address,
+            indexer_id,
             protocol_network,
             current_epoch,
             max_allocation_epochs,
