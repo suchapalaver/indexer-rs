@@ -852,7 +852,7 @@ impl Default for ExecutorAgentConfig {
 }
 
 /// Configuration for the Management API GraphQL server
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(test, derive(PartialEq))]
 pub struct ManagementApiConfig {
     /// Port for the Management API GraphQL server
@@ -862,6 +862,11 @@ pub struct ManagementApiConfig {
     /// Host address to bind to
     #[serde(default = "default_management_api_host")]
     pub host: String,
+
+    /// Optional bearer token for Management API authentication.
+    /// If unset, only localhost bindings are allowed.
+    #[serde(default)]
+    pub auth_token: Option<String>,
 }
 
 fn default_management_api_port() -> u16 {
@@ -877,6 +882,7 @@ impl Default for ManagementApiConfig {
         Self {
             port: default_management_api_port(),
             host: default_management_api_host(),
+            auth_token: None,
         }
     }
 }

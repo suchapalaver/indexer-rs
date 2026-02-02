@@ -14,9 +14,16 @@ integrated with [TAP](https://github.com/semiotic-ai/timeline-aggregation-protoc
 which is a fast, efficient, and trustless unidirectional micro-payments system.
 
 ---
+
 ## Getting Started
 
 This section provides guidance for building, configuring, and running `indexer-service-rs` and `indexer-tap-agent`.
+
+### Management API Security
+
+The Management API can approve/cancel actions and change indexing rules. When exposing it beyond
+localhost, set a bearer token in the config and keep it private. The service will refuse to bind
+to non-localhost without an auth token.
 
 ### Docker Images
 
@@ -39,6 +46,7 @@ The `<tag>` corresponds to the current release version, which can be found in th
 #### Tag Examples for Version X.Y.Z
 
 For version `X.Y.Z`, the available tags include:
+
 - `latest`
 - `vX.Y.Z`
 - `X.Y.Z`
@@ -47,6 +55,7 @@ For version `X.Y.Z`, the available tags include:
 - `vX`
 
 Refer to the following badges for the latest release versions:
+
 | indexer-service-rs | [![GitHub Release](https://img.shields.io/github/v/release/graphprotocol/indexer-rs?filter=indexer-service-rs-*)](https://github.com/graphprotocol/indexer-rs/releases?q=indexer-service-rs) |
 |---------------------|---------------------------------------------------------------------------------------------------------------------------|
 | indexer-tap-agent   | [![GitHub Release](https://img.shields.io/github/v/release/graphprotocol/indexer-rs?filter=indexer-tap-agent-*)](https://github.com/graphprotocol/indexer-rs/releases?q=indexer-tap-agent) |
@@ -57,7 +66,7 @@ Refer to the following badges for the latest release versions:
 
 To build the services locally, ensure you have the latest version of Rust installed. No additional plugins are required.
 
-#### Steps:
+#### Steps
 
 1. Clone the repository:
 
@@ -65,7 +74,8 @@ To build the services locally, ensure you have the latest version of Rust instal
 git clone https://github.com/graphprotocol/indexer-rs.git && cd indexer-rs
 ```
 
-2. Build the binaries:
+1. Build the binaries:
+
 - **Indexer Service:**
 
   ```
@@ -78,7 +88,8 @@ git clone https://github.com/graphprotocol/indexer-rs.git && cd indexer-rs
   cargo build --release -p indexer-tap-agent
   ```
 
-3. The compiled binaries can be found in the `target/release/` directory:
+1. The compiled binaries can be found in the `target/release/` directory:
+
 - `target/release/indexer-service-rs`
 - `target/release/indexer-tap-agent`
 
@@ -87,9 +98,11 @@ git clone https://github.com/graphprotocol/indexer-rs.git && cd indexer-rs
 ### Configuration
 
 The services require a configuration file provided through the `--config` flag during startup. A minimal example configuration is available at:
+
 - [Minimal Configuration Template](crates/config/minimal-config-example.toml)
 
-#### Steps:
+#### Steps
+
 1. **Edit the Configuration:**
 Open the `minimal-config-example.toml` file and populate the required fields. Some fields must be configured with values from [this table](https://thegraph.com/docs/en/tap/#blockchain-addresses).
 
@@ -100,7 +113,8 @@ You can override configuration fields using environment variables. Use the prefi
 export INDEXER_SERVICE_SUBGRAPHS__NETWORK__QUERY_URL=<value>
 ```
 
-3. **Start the Service:**
+1. **Start the Service:**
+
 - **Indexer Service:**
 
   ```bash
@@ -122,12 +136,11 @@ All configuration is managed through a TOML file. Below are examples of configur
 
 If you are migrating from an older stack, use the [Migration Configuration Guide](./docs/migration-config/README.md) for detailed instructions.
 
-### Key Notes:
+### Key Notes
 
 - Ensure your configuration is tailored to your deployment environment.
 - Validate the configuration file syntax before starting the service.
 - Use environment variables to override sensitive settings like database credentials or API tokens where applicable.
-
 
 ### Migrations
 
@@ -135,7 +148,6 @@ If you are migrating from an older stack, use the [Migration Configuration Guide
 - No migrations are run in `indexer-rs` stack, since it could cause conflicts;
 - `indexer-agent` is solely responsible for database management;
 - `/migrations` folder is used **ONLY** for development purposes.
-
 
 ## Upgrading
 
@@ -154,19 +166,20 @@ By following these steps, you can take advantage of new features and improvement
 We welcome contributions to `indexer-rs`!
 
 ### How to Contribute
+
 - Read the [Contributions Guide](./CONTRIBUTORS.md) for detailed guidelines.
 - Follow coding standards and ensure your changes align with the project structure.
 - Write tests to validate your contributions and maintain project integrity.
 - Submit a pull request with a clear description of your changes and their purpose.
 
 Contributions can include:
+
 - Bug fixes
 - New features
 - Documentation improvements
 - Performance optimizations
 
 Feel free to suggest enhancements or report issues in the project repository.
-
 
 ## Implementation Details
 
@@ -175,6 +188,7 @@ Feel free to suggest enhancements or report issues in the project repository.
 The Subgraph Service is an [axum](https://crates.io/crates/axum)-based web server that serves as a router to [graph-node](https://github.com/graphprotocol/graph-node). It is designed for extensibility, granularity, and testability.
 
 #### Key Features
+
 - **Middleware-Based Checks:** All validation and processing are performed through middleware, enabling modular and reusable components.
 - **TAP Integration:**
   - TAP receipts are processed by the `tap-middleware`, where they undergo various [checks](./crates/service/src/tap/checks/).
@@ -193,6 +207,7 @@ The Subgraph Service is an [axum](https://crates.io/crates/axum)-based web serve
 The TAP Agent is an actor-based system powered by [ractor](https://crates.io/crates/ractor). It processes receipts into RAVs (Receipt Aggregate Vouchers) and prepares them for redemption by the `indexer-agent`.
 
 #### Key Features
+
 1. **Receipt Processing:**
    - Receipts are fetched from the `receipts` table in the database using `pglisten`.
    - The actor system validates and processes receipts before aggregating them into RAVs.
@@ -231,7 +246,6 @@ The TAP Agent is an actor-based system powered by [ractor](https://crates.io/cra
      - Review debug logs (`RUST_LOG=debug`) for additional context.
      - Use the Grafana dashboard to identify bottlenecks or failures in the actor system.
 
-
 ## Crates
 
 | Crate Name               | Description                                                                                  |
@@ -246,7 +260,6 @@ The TAP Agent is an actor-based system powered by [ractor](https://crates.io/cra
 | `indexer-tap-agent`      | Processes receipts into RAVs (Redeemable Aggregate Values) and marks them as ready for redemption. |
 | `indexer-watcher`        | An alternative to [eventuals](https://github.com/edgeandnode/eventuals), built on `tokio::sync::watch`. |
 | `test-assets`            | Provides assets for testing, such as generating allocations, wallets, and receipts.          |
-
 
 ## Additional Documentation
 

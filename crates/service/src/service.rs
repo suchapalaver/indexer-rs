@@ -95,9 +95,12 @@ pub async fn run() -> anyhow::Result<()> {
     if config.agent.enabled {
         let management_addr = config.agent.management_api.get_socket_addr();
         let management_pool = database.clone();
+        let management_config = config.agent.management_api.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = start_management_api(management_addr, management_pool).await {
+            if let Err(e) =
+                start_management_api(management_addr, management_pool, management_config).await
+            {
                 tracing::error!(error = %e, "Management API server failed");
             }
         });
@@ -372,13 +375,49 @@ async fn start_dips_server(addr: SocketAddr, service: impl IndexerDipsService) {
         .expect("unable to start dips grpc");
 }
 
-async fn start_management_api(addr: SocketAddr, pool: sqlx::PgPool) -> anyhow::Result<()> {
+async fn start_management_api(
+    addr: SocketAddr,
+    pool: sqlx::PgPool,
+    config: indexer_config::ManagementApiConfig,
+) -> anyhow::Result<()> {
     use async_graphql_axum::GraphQL;
-    use axum::{routing::post_service, Router};
+    use axum::{http::header::AUTHORIZATION, middleware::from_fn, routing::post_service, Router};
 
     let schema = indexer_management_api::build_schema(pool).await;
 
-    let app = Router::new().route("/graphql", post_service(GraphQL::new(schema)));
+    if config.auth_token.is_none() {
+        let host = config.host.as_str();
+        let is_localhost = matches!(host, "127.0.0.1" | "localhost" | "::1");
+        if !is_localhost {
+            anyhow::bail!(
+                "Management API auth_token must be set when binding to non-localhost host={host}"
+            );
+        }
+        tracing::warn!(
+            host = %config.host,
+            "Management API is unauthenticated; binding only allowed on localhost"
+        );
+    }
+
+    let auth_token = config.auth_token.clone();
+    let app = Router::new()
+        .route("/graphql", post_service(GraphQL::new(schema)))
+        .layer(from_fn(move |req, next| {
+            let auth_token = auth_token.clone();
+            async move {
+                if let Some(expected) = auth_token.as_deref() {
+                    let header = req.headers().get(AUTHORIZATION);
+                    let ok = header
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|value| value.strip_prefix("Bearer "))
+                        .is_some_and(|value| value == expected);
+                    if !ok {
+                        return Err(axum::http::StatusCode::UNAUTHORIZED);
+                    }
+                }
+                Ok::<_, axum::http::StatusCode>(next.run(req).await)
+            }
+        }));
 
     let listener = TcpListener::bind(&addr)
         .await
