@@ -182,10 +182,10 @@ impl Config {
         }
 
         match &self.tap.rav_request.trigger_value_divisor {
-            x if *x <= 1.into() => {
+            x if *x <= 1i32 => {
                 return Err("trigger_value_divisor must be greater than 1".to_string())
             }
-            x if *x > 1.into() && *x < 10.into() => tracing::warn!(
+            x if *x > 1i32 && *x < 10i32 => tracing::warn!(
                 "It's recommended that trigger_value_divisor \
                 be a value greater than 10."
             ),

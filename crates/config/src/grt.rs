@@ -27,7 +27,7 @@ impl<'de> Deserialize<'de> for NonZeroGRT {
         D: serde::Deserializer<'de>,
     {
         let v = BigDecimal::deserialize(deserializer)?;
-        if v <= 0.into() {
+        if v <= 0i32 {
             return Err(Error::custom("GRT value must be greater than 0"));
         }
         // Convert to wei

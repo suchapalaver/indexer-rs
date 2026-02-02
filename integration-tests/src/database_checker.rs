@@ -811,7 +811,7 @@ impl DatabaseChecker {
                     .unwrap_or(0.0)
             );
 
-            if total_pending_value >= BigDecimal::from(trigger_value) {
+            if total_pending_value >= trigger_value {
                 println!("   ✅ Ready to trigger RAV!");
             } else {
                 let needed = BigDecimal::from(trigger_value) - &total_pending_value;

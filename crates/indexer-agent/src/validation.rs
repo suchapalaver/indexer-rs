@@ -452,13 +452,11 @@ pub fn validate_poi_fields(
         if let Some(public_poi_str) = public_poi {
             validate_poi_hash(public_poi_str)?;
         }
-    } else {
-        if public_poi.is_some() || poi_block_number.is_some() {
-            return Err(ValidationError::MissingRequiredField {
-                action_type: "unallocate/reallocate",
-                field: "poi",
-            });
-        }
+    } else if public_poi.is_some() || poi_block_number.is_some() {
+        return Err(ValidationError::MissingRequiredField {
+            action_type: "unallocate/reallocate",
+            field: "poi",
+        });
     }
 
     Ok(())

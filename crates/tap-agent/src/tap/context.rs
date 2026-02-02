@@ -14,7 +14,7 @@ use tap_core::{
 };
 use thegraph_core::{
     alloy::{primitives::Address, sol_types::SolStruct},
-    CollectionId,
+    AllocationId, CollectionId,
 };
 use tokio::sync::watch::Receiver;
 
@@ -88,7 +88,7 @@ impl NetworkVersion for Horizon {
         tap_aggregator::grpc::v2::tap_aggregator_client::TapAggregatorClient<Channel>;
 
     fn allocation_id_to_address(id: &Self::AllocationId) -> Address {
-        AllocationIdCore::from(*id).into_inner()
+        AllocationId::from(*id).into_inner()
     }
 
     async fn aggregate(

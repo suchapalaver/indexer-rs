@@ -3153,9 +3153,8 @@ pub mod tests {
             create_sender_account()
                 .pgpool(pgpool)
                 .escrow_subgraph_endpoint(&mock_escrow_subgraph.uri())
-                .network_subgraph_endpoint(&mock_network_subgraph.uri())
+                .network_subgraph_endpoint(&mock_escrow_subgraph.uri())
                 .initial_allocation(allocation_set.clone())
-                .escrow_subgraph_endpoint(&mock_escrow_subgraph.uri())
                 .call()
                 .await;
 
@@ -3297,9 +3296,8 @@ pub mod tests {
             create_sender_account()
                 .pgpool(pgpool)
                 .escrow_subgraph_endpoint(&mock_escrow_subgraph.uri())
-                .network_subgraph_endpoint(&mock_network_subgraph.uri())
+                .network_subgraph_endpoint(&mock_escrow_subgraph.uri())
                 .initial_allocation(initial_allocation_set)
-                .escrow_subgraph_endpoint(&mock_escrow_subgraph.uri())
                 .call()
                 .await;
 

@@ -1,6 +1,10 @@
 // Copyright 2023-, Edge & Node, GraphOps, and Semiotic Labs.
 // SPDX-License-Identifier: Apache-2.0
 
+// ValidateRequestHeaderLayer::bearer is deprecated but still functional.
+// TODO: Replace with custom authentication middleware.
+#![allow(deprecated)]
+
 use std::{sync::Arc, time::Duration};
 
 use async_graphql_axum::GraphQL;

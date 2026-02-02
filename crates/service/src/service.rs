@@ -402,7 +402,7 @@ async fn start_management_api(
     let auth_token = config.auth_token.clone();
     let app = Router::new()
         .route("/graphql", post_service(GraphQL::new(schema)))
-        .layer(from_fn(move |req, next| {
+        .layer(from_fn(move |req: axum::extract::Request, next: axum::middleware::Next| {
             let auth_token = auth_token.clone();
             async move {
                 if let Some(expected) = auth_token.as_deref() {
