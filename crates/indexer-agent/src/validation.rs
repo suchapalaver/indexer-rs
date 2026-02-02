@@ -320,6 +320,20 @@ pub fn validate_allocation_id(allocation_id: &str) -> Result<(), ValidationError
         )));
     }
 
+    // Must parse as a typed AllocationId (defensive, type-safe validation).
+    // Accept both checksummed and non-checksummed hex by falling back to lowercase.
+    if allocation_id
+        .parse::<thegraph_core::AllocationId>()
+        .is_err()
+    {
+        let normalized = format!("0x{}", hex.to_ascii_lowercase());
+        if normalized.parse::<thegraph_core::AllocationId>().is_err() {
+            return Err(ValidationError::InvalidAllocationId(redact_input(
+                allocation_id,
+            )));
+        }
+    }
+
     Ok(())
 }
 
