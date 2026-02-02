@@ -169,6 +169,32 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_amount_grt_scientific_large_ok() {
+        let amount = parse_amount_wei("1e59").unwrap();
+        let expected = U256::from_str_radix(
+            "100000000000000000000000000000000000000000000000000000000000000000000000000",
+            10,
+        )
+        .unwrap();
+        assert_eq!(amount, expected);
+    }
+
+    #[test]
+    fn test_parse_amount_grt_scientific_too_large() {
+        let err = parse_amount_wei("1e60").unwrap_err();
+        assert!(err.reason.contains("out of range"));
+    }
+
+    #[test]
+    fn test_parse_amount_integer_too_large() {
+        let err = parse_amount_wei(
+            "1000000000000000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap_err();
+        assert!(err.reason.contains("out of range"));
+    }
+
+    #[test]
     fn test_parse_amount_grt_fractional_wei_error() {
         let err = parse_amount_wei("1e-19").unwrap_err();
         assert!(err.reason.contains("fractional wei"));
