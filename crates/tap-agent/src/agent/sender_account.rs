@@ -3097,7 +3097,7 @@ pub mod tests {
                 ReceiptFees::NewReceipt(TRIGGER_VALUE, get_current_timestamp_u64_ns()),
             ))
             .unwrap();
-        let expected = |msg: &SenderAccountMessage| {
+        fn expected(msg: &SenderAccountMessage) -> bool {
             matches!(
                 msg,
                 SenderAccountMessage::UpdateReceiptFees(
@@ -3105,7 +3105,7 @@ pub mod tests {
                     ReceiptFees::NewReceipt(TRIGGER_VALUE, _)
                 ) if *collection_id == CollectionId::from(ALLOCATION_ID_0)
             )
-        };
+        }
         let msg = recv_until(&mut msg_receiver, expected, Duration::from_secs(1))
             .await
             .expect("Expected NewReceipt message not found");
