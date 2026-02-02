@@ -1,0 +1,23 @@
+# Network Subgraph GraphTallyTokensCollected Query
+#
+# Input Variables:
+# - $payer (Bytes!): Payer address
+# - $receiver (Bytes!): Receiver (indexer) address
+# - $collectionIds ([Bytes!]!): Collection IDs (32-byte values)
+#
+# Query Logic:
+# - Fetches GraphTallyTokensCollected entries for the payer/receiver and requested collection IDs.
+# - Returns the collectionId and tokens redeemed.
+
+query GraphTallyTokensCollectedQuery($payer: Bytes!, $receiver: Bytes!, $collectionIds: [Bytes!]!) {
+  graphTallyTokensCollecteds(
+    where: {
+      payer_: { id: $payer }
+      receiver_: { id: $receiver }
+      collectionId_in: $collectionIds
+    }
+  ) {
+    collectionId
+    tokens
+  }
+}

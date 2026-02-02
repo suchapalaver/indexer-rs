@@ -402,22 +402,24 @@ async fn start_management_api(
     let auth_token = config.auth_token.clone();
     let app = Router::new()
         .route("/graphql", post_service(GraphQL::new(schema)))
-        .layer(from_fn(move |req: axum::extract::Request, next: axum::middleware::Next| {
-            let auth_token = auth_token.clone();
-            async move {
-                if let Some(expected) = auth_token.as_deref() {
-                    let header = req.headers().get(AUTHORIZATION);
-                    let ok = header
-                        .and_then(|value| value.to_str().ok())
-                        .and_then(|value| value.strip_prefix("Bearer "))
-                        .is_some_and(|value| value == expected);
-                    if !ok {
-                        return Err(axum::http::StatusCode::UNAUTHORIZED);
+        .layer(from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                let auth_token = auth_token.clone();
+                async move {
+                    if let Some(expected) = auth_token.as_deref() {
+                        let header = req.headers().get(AUTHORIZATION);
+                        let ok = header
+                            .and_then(|value| value.to_str().ok())
+                            .and_then(|value| value.strip_prefix("Bearer "))
+                            .is_some_and(|value| value == expected);
+                        if !ok {
+                            return Err(axum::http::StatusCode::UNAUTHORIZED);
+                        }
                     }
+                    Ok::<_, axum::http::StatusCode>(next.run(req).await)
                 }
-                Ok::<_, axum::http::StatusCode>(next.run(req).await)
-            }
-        }));
+            },
+        ));
 
     let listener = TcpListener::bind(&addr)
         .await

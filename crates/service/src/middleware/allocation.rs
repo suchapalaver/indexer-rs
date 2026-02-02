@@ -60,7 +60,9 @@ mod tests {
         Router,
     };
     use reqwest::StatusCode;
-    use test_assets::{create_signed_receipt_v2, ALLOCATION_ID_0, COLLECTION_ID_0, ESCROW_SUBGRAPH_DEPLOYMENT};
+    use test_assets::{
+        create_signed_receipt_v2, ALLOCATION_ID_0, COLLECTION_ID_0, ESCROW_SUBGRAPH_DEPLOYMENT,
+    };
     use thegraph_core::{AllocationId, DeploymentId};
     use tokio::sync::watch;
     use tower::ServiceExt;

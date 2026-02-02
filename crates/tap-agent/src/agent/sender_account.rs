@@ -899,13 +899,14 @@ impl State {
             return Ok(());
         }
 
-        // 2. Query escrow subgraph for current state
+        // TAP v2 collectionId is a 32-byte value that embeds the allocation ID; we rely on it
+        // as the canonical key for GraphTallyCollector redeemed-token tracking.
         let collection_ids: Vec<String> = final_ravs
             .iter()
             .filter_map(|(collection_id, _)| {
                 CollectionId::from_str(collection_id)
                     .ok()
-                    .map(|c| c.as_address().to_string())
+                    .map(|c| format!("{c:x?}"))
             })
             .collect();
 
@@ -913,33 +914,32 @@ impl State {
             return Ok(());
         }
 
-        use indexer_query::latest_ravs_v2::{self, LatestRavs};
+        use indexer_query::graph_tally_tokens_collected::{self, GraphTallyTokensCollectedQuery};
 
-        let data_service = self.config.tap_mode.subgraph_service_address;
         let subgraph_response = self
-            .escrow_subgraph
-            .query::<LatestRavs, _>(latest_ravs_v2::Variables {
+            .network_subgraph
+            .query::<GraphTallyTokensCollectedQuery, _>(graph_tally_tokens_collected::Variables {
                 payer: format!("{:x?}", self.sender),
-                data_service: format!("{data_service:x?}"),
-                service_provider: format!("{:x?}", self.config.indexer_address),
+                receiver: format!("{:x?}", self.config.indexer_address),
                 collection_ids,
             })
             .await;
 
-        let subgraph_ravs: HashMap<String, u128> = match subgraph_response {
+        let subgraph_tokens: HashMap<CollectionId, u128> = match subgraph_response {
             Ok(Ok(response)) => response
-                .latest_ravs
+                .graph_tally_tokens_collecteds
                 .into_iter()
-                .filter_map(|rav| {
-                    let value = rav.value_aggregate.parse::<u128>().ok()?;
-                    Some((rav.id.to_lowercase(), value))
+                .filter_map(|entry| {
+                    let collection_id = CollectionId::from_str(&entry.collection_id).ok()?;
+                    let tokens = entry.tokens.parse::<u128>().ok()?;
+                    Some((collection_id, tokens))
                 })
                 .collect(),
             Ok(Err(e)) => {
                 tracing::warn!(
                     error = %e,
                     sender = %self.sender,
-                    "Failed to query subgraph for RAV reorg reconciliation"
+                    "Failed to query network subgraph for collected tokens; skipping reorg reconciliation"
                 );
                 return Ok(());
             }
@@ -947,38 +947,34 @@ impl State {
                 tracing::warn!(
                     error = %e,
                     sender = %self.sender,
-                    "Failed to execute subgraph query for RAV reorg reconciliation"
+                    "Failed to execute network subgraph query for collected tokens; skipping reorg reconciliation"
                 );
                 return Ok(());
             }
         };
 
-        // 3. Check for reorgs: if subgraph value < our final value, a reorg happened
         for (collection_id_str, value_aggregate) in final_ravs {
             let local_value = value_aggregate
                 .to_bigint()
                 .and_then(|v: bigdecimal::num_bigint::BigInt| v.to_u128())
                 .unwrap_or(0);
 
-            // Convert collection_id to address format for lookup
-            let lookup_key = CollectionId::from_str(&collection_id_str)
-                .ok()
-                .map(|c| c.as_address().to_string().to_lowercase());
-
-            let Some(lookup_key) = lookup_key else {
+            let Ok(collection_id) = CollectionId::from_str(&collection_id_str) else {
                 continue;
             };
 
-            // Check if subgraph shows less value than our local state
-            let subgraph_value = subgraph_ravs.get(&lookup_key).copied().unwrap_or(0);
+            let Some(&subgraph_tokens) = subgraph_tokens.get(&collection_id) else {
+                // Avoid false positives if the subgraph hasn't indexed this collection yet.
+                continue;
+            };
 
-            if subgraph_value < local_value {
+            if subgraph_tokens < local_value {
                 tracing::warn!(
                     sender = %self.sender,
                     collection_id = %collection_id_str,
                     local_value = %local_value,
-                    subgraph_value = %subgraph_value,
-                    "Detected RAV reorg: subgraph value less than local final value"
+                    subgraph_tokens = %subgraph_tokens,
+                    "Detected RAV reorg: collected tokens less than local final value"
                 );
                 self.revert_rav_to_pending(&collection_id_str).await?;
             }
@@ -1082,88 +1078,67 @@ impl Actor for SenderAccount {
                         vec![]
                     };
 
-                // get a list from the subgraph of which subgraphs were already redeemed and were not marked as final
+                // V2 network subgraph uses GraphTallyTokensCollected (collectionId encodes data service).
                 let redeemed_ravs_allocation_ids = if config.tap_mode.is_horizon() {
-                    // V2 doesn't have transaction tracking like V1, but we can check if the RAVs
-                    // we're about to redeem are still the latest ones by querying LatestRavs.
-                    // If the subgraph has newer RAVs, it means ours were already redeemed.
-                    use indexer_query::latest_ravs_v2::{self, LatestRavs};
-
                     let collection_ids: Vec<String> = last_non_final_ravs
                         .iter()
-                        .map(|(collection_id, _)| collection_id.as_address().to_string())
+                        .map(|(collection_id, _)| format!("{collection_id:x?}"))
                         .collect();
 
-                    if !collection_ids.is_empty() {
-                        // For V2/Horizon: data_service must be the SubgraphService address to match
-                        // on-chain RAV lookups (service_provider is the indexer address)
+                    if collection_ids.is_empty() {
+                        vec![]
+                    } else {
+                        use indexer_query::graph_tally_tokens_collected::{
+                            self, GraphTallyTokensCollectedQuery,
+                        };
+
                         let data_service = config.tap_mode.subgraph_service_address;
 
-                        match escrow_subgraph
-                            .query::<LatestRavs, _>(latest_ravs_v2::Variables {
-                                payer: format!("{sender_id:x?}"),
-                                data_service: format!("{data_service:x?}"),
-                                service_provider: format!("{:x?}", config.indexer_address),
-                                collection_ids: collection_ids.clone(),
-                            })
+                        match network_subgraph
+                            .query::<GraphTallyTokensCollectedQuery, _>(
+                                graph_tally_tokens_collected::Variables {
+                                    payer: format!("{sender_id:x?}"),
+                                    receiver: format!("{:x?}", config.indexer_address),
+                                    collection_ids: collection_ids.clone(),
+                                },
+                            )
                             .await
                         {
                             Ok(Ok(response)) => {
-                                // Create maps of our current RAVs for easy lookup
-                                // One map keyed by address (for filtering), one by collection_id (for marking final)
-                                let our_ravs: HashMap<String, u128> = last_non_final_ravs
+                                let our_ravs: HashMap<CollectionId, u128> = last_non_final_ravs
                                     .iter()
                                     .map(|(collection_id, value)| {
                                         let value_u128 = value
                                             .to_bigint()
                                             .and_then(|v| v.to_u128())
                                             .unwrap_or(0);
-                                        (collection_id.as_address().to_string(), value_u128)
+                                        (*collection_id, value_u128)
                                     })
                                     .collect();
 
-                                // Also create a reverse map from address to original collection_id
-                                let addr_to_collection: HashMap<String, &CollectionId> =
-                                    last_non_final_ravs
-                                        .iter()
-                                        .map(|(collection_id, _)| {
-                                            (collection_id.as_address().to_string(), collection_id)
-                                        })
-                                        .collect();
-
-                                // Check which RAVs have been updated (indicating redemption)
                                 let mut finalized_allocation_ids = vec![];
                                 let mut collection_ids_to_mark_final = vec![];
 
-                                for rav in response.latest_ravs {
-                                    if let Some(&our_value) = our_ravs.get(&rav.id) {
-                                        // If the subgraph RAV has higher value, our RAV was redeemed
-                                        if let Ok(subgraph_value) =
-                                            rav.value_aggregate.parse::<u128>()
-                                        {
-                                            if subgraph_value > our_value {
-                                                // Convert collection_id to address format for consistent comparison
-                                                if let Ok(collection_id) =
-                                                    CollectionId::from_str(&rav.id)
-                                                {
-                                                    let addr = collection_id.as_address();
-                                                    finalized_allocation_ids
-                                                        .push(format!("{addr:x?}"));
+                                for entry in response.graph_tally_tokens_collecteds {
+                                    let Ok(collection_id) =
+                                        CollectionId::from_str(&entry.collection_id)
+                                    else {
+                                        continue;
+                                    };
+                                    let Ok(tokens_collected) = entry.tokens.parse::<u128>() else {
+                                        continue;
+                                    };
 
-                                                    // Track the collection_id to mark as final
-                                                    if let Some(allocation_id) =
-                                                        addr_to_collection.get(&rav.id)
-                                                    {
-                                                        collection_ids_to_mark_final
-                                                            .push(allocation_id.0.encode_hex());
-                                                    }
-                                                }
-                                            }
+                                    if let Some(&our_value) = our_ravs.get(&collection_id) {
+                                        if tokens_collected >= our_value {
+                                            let addr = collection_id.as_address();
+                                            finalized_allocation_ids.push(format!("{addr:x?}"));
+                                            collection_ids_to_mark_final
+                                                .push(collection_id.encode_hex());
                                         }
                                     }
                                 }
 
-                                // Mark redeemed RAVs as final in the database
                                 for collection_id in &collection_ids_to_mark_final {
                                     let result = sqlx::query(
                                         r#"
@@ -1180,7 +1155,7 @@ impl Actor for SenderAccount {
                                     .bind(collection_id)
                                     .bind(sender_id.encode_hex())
                                     .bind(config.indexer_address.encode_hex())
-                                    .bind(config.tap_mode.subgraph_service_address.encode_hex())
+                                    .bind(data_service.encode_hex())
                                     .execute(&pgpool)
                                     .await;
 
@@ -1213,7 +1188,7 @@ impl Actor for SenderAccount {
                                 tracing::warn!(
                                     error = %e,
                                     sender = %sender_id,
-                                    "Failed to query V2 latest RAVs, assuming none are finalized"
+                                    "Failed to query collected tokens, assuming none are finalized"
                                 );
                                 vec![]
                             }
@@ -1221,13 +1196,11 @@ impl Actor for SenderAccount {
                                 tracing::warn!(
                                     error = %e,
                                     sender = %sender_id,
-                                    "Failed to execute V2 latest RAVs query, assuming none are finalized"
+                                    "Failed to execute collected tokens query, assuming none are finalized"
                                 );
                                 vec![]
                             }
                         }
-                    } else {
-                        vec![]
                     }
                 } else {
                     vec![]
@@ -2113,6 +2086,7 @@ pub mod tests {
                 .await;
         mock_escrow_subgraph_server
     }
+
     struct TestSenderAccount {
         sender_account: ActorRef<SenderAccountMessage>,
         msg_receiver: mpsc::Receiver<SenderAccountMessage>,

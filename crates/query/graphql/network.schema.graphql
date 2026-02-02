@@ -6897,6 +6897,56 @@ enum Signer_orderBy {
   thawEndTimestamp
 }
 
+type GraphTallyTokensCollected @entity {
+  id: Bytes!
+  payer: Payer!
+  receiver: Receiver!
+  collectionId: Bytes!
+  tokens: BigInt!
+}
+
+input GraphTallyTokensCollected_filter {
+  id: Bytes
+  id_not: Bytes
+  id_in: [Bytes!]
+  id_not_in: [Bytes!]
+  payer: String
+  payer_not: String
+  payer_in: [String!]
+  payer_not_in: [String!]
+  payer_: Payer_filter
+  receiver: String
+  receiver_not: String
+  receiver_in: [String!]
+  receiver_not_in: [String!]
+  receiver_: Receiver_filter
+  collectionId: Bytes
+  collectionId_not: Bytes
+  collectionId_in: [Bytes!]
+  collectionId_not_in: [Bytes!]
+  tokens: BigInt
+  tokens_not: BigInt
+  tokens_gt: BigInt
+  tokens_lt: BigInt
+  tokens_gte: BigInt
+  tokens_lte: BigInt
+  tokens_in: [BigInt!]
+  tokens_not_in: [BigInt!]
+  _change_block: BlockChangedFilter
+  and: [GraphTallyTokensCollected_filter]
+  or: [GraphTallyTokensCollected_filter]
+}
+
+enum GraphTallyTokensCollected_orderBy {
+  id
+  payer
+  payer__id
+  receiver
+  receiver__id
+  collectionId
+  tokens
+}
+
 type Query {
   graphNetwork(
     id: ID!
@@ -8361,6 +8411,20 @@ type Query {
     """
     subgraphError: _SubgraphErrorPolicy_! = deny
   ): [PaymentsEscrowAccount!]!
+  graphTallyTokensCollected(
+    id: ID!
+    block: Block_height
+    subgraphError: _SubgraphErrorPolicy_! = deny
+  ): GraphTallyTokensCollected
+  graphTallyTokensCollecteds(
+    skip: Int = 0
+    first: Int = 100
+    orderBy: GraphTallyTokensCollected_orderBy
+    orderDirection: OrderDirection
+    where: GraphTallyTokensCollected_filter
+    block: Block_height
+    subgraphError: _SubgraphErrorPolicy_! = deny
+  ): [GraphTallyTokensCollected!]!
   collector(
     id: ID!
     block: Block_height
