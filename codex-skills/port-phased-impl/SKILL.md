@@ -11,11 +11,13 @@ Drive a phased implementation plan and security audit for the specific invariant
 
 - Reallocate non-atomicity (partial failure visibility and recovery)
 - Epoch transition race in reconciliation loop
-- Management API default bind hardening (localhost)
+- Management API security hardening (auth + bind safety)
 - Allocation proof signing correctness (EIP-712)
 - Amount parsing ambiguity (GRT vs wei, float precision, overflow)
 - Action input validation and action transaction immutability
 - POI resolution and force-close semantics
+- Gas-price wait behavior and action retry semantics
+- API abuse controls (rate limiting, depth/complexity limits)
 
 ## Operating Rules
 
@@ -41,12 +43,14 @@ Drive a phased implementation plan and security audit for the specific invariant
 - Fix allocation proof signing to match Horizon EIP-712.
 - Fix amount parsing to be unambiguous and lossless (no f64). Define accepted formats explicitly, include overflow/large exponent tests.
 - Make reallocate partial failures explicit (record both tx hashes or partial status; no silent loss of audit trail).
+- Prevent gas price timeouts from permanently failing actions; keep actions approved for retry.
 
 Acceptance criteria:
 
 - Allocation tx executes in local-network with valid proof.
 - Amount parsing for wei and GRT is correct for large values and rejects ambiguous input.
 - Reallocate partial failure is recoverable and auditable (no missing unallocate hash).
+- Gas spikes do not stall action execution permanently; actions retry on next cycle.
 
 ### Phase 2: Invariant Enforcement & Action Validations
 
@@ -54,13 +58,15 @@ Acceptance criteria:
 
 - Enforce action input validation (required params per action type, protocol network format).
 - Enforce transaction immutability for Actions once set.
-- Harden Management API default bind to localhost.
+- Add Management API authentication (bearer token or stronger) and security warnings in docs/config examples.
+- Add GraphQL query depth/complexity limits.
 
 Acceptance criteria:
 
 - Queueing invalid actions fails at API boundary.
 - Transaction hash cannot be overwritten once set.
-- Management API does not bind to 0.0.0.0 by default.
+- Management API requires auth when exposed beyond localhost.
+- GraphQL query limits are enforced.
 
 ### Phase 3: Reconciliation Safety & POI Semantics
 
@@ -69,12 +75,14 @@ Acceptance criteria:
 - Fix epoch transition race in reconciliation loop (bounded retry or explicit invariant for single retry).
 - Implement POI resolution path or enforce POI presence for unallocate/reallocate, including public POI and block number.
 - Honor `force` semantics rather than forcing zero-POI by default.
+- Add retry logic for transient POI resolution failures (avoid permanent failure).
 
 Acceptance criteria:
 
 - Reconciliation handles epoch transitions without inconsistent snapshots.
 - Unallocate uses resolved POI when provided; force-close only when explicitly requested.
 - POI metadata encoded matches TS expectations.
+- Temporary graph-node outages do not permanently fail unallocations.
 
 ### Phase 4: End-to-End Validation
 
@@ -83,11 +91,28 @@ Acceptance criteria:
 - Add or extend tests mirroring TS invariants (unit + e2e on local-network).
 - Run reconciliation loop tests that cover allocation create/close/reallocate across a restart.
 - Validate management API action queues with invalid inputs.
+- Validate management API auth/rate limits under load.
 
 Acceptance criteria:
 
 - All new tests pass; e2e shows parity for critical flows.
 - No unexpected funds movement or failed transactions in e2e.
+- Auth/rate-limit protections are verified in integration tests.
+
+## Roadmap Additions (from audit summary)
+
+Incorporate these items into the phased plan above and track them explicitly:
+
+- Management API has no authentication (blocking)
+- Reallocate is non-atomic without recovery (blocking)
+- Gas price timeout permanently fails actions (blocking)
+- No GraphQL query depth/complexity limits (should address)
+- POI resolution failure permanently blocks unallocation (should address)
+- Legacy table cleanup and dead branches (note: legacy already removed; keep as “verify none remain”)
+- Allocation ID TOCTOU race (add unique constraint)
+- Error sanitization for GraphQL responses
+- Rate limiting for management API
+- Action cooldown granularity per action type
 
 ## Execution Pattern (per phase)
 
