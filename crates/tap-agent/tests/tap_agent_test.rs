@@ -32,7 +32,10 @@ use test_assets::{
 };
 use thegraph_core::alloy::{hex::ToHexExt, primitives::Address};
 use tokio::sync::{mpsc, watch};
-use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+use wiremock::{
+    matchers::{body_string_contains, method},
+    Mock, MockServer, ResponseTemplate,
+};
 
 pub static SUBGRAPH_SERVICE_ADDRESS: [u8; 20] = [0x11u8; 20];
 
@@ -45,17 +48,16 @@ pub async fn start_agent(
     watch::Sender<HashMap<Address, Allocation>>,
     mpsc::Sender<indexer_tap_agent::agent::sender_accounts_manager::ChannelReceiptNotification>,
 ) {
-    let escrow_subgraph_mock_server: MockServer = MockServer::start().await;
-    escrow_subgraph_mock_server
-        .register(Mock::given(method("POST")).respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({ "data": {
-                    "transactions": [],
-                }
-            })),
-        ))
+    let network_subgraph_mock_server: MockServer = MockServer::start().await;
+    network_subgraph_mock_server
+        .register(
+            Mock::given(method("POST"))
+                .and(body_string_contains("graphTallyTokensCollecteds"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "data": { "graphTallyTokensCollecteds": [] }
+                }))),
+        )
         .await;
-
-    let network_subgraph_mock_server = MockServer::start().await;
 
     let (escrow_tx, escrow_accounts) = watch::channel(EscrowAccounts::new(
         ESCROW_ACCOUNTS_BALANCES.clone(),
@@ -77,15 +79,6 @@ pub async fn start_agent(
             http_client.clone(),
             None,
             DeploymentDetails::for_query_url(&network_subgraph_mock_server.uri()).unwrap(),
-        )
-        .await,
-    ));
-
-    let escrow_subgraph = Box::leak(Box::new(
-        SubgraphClient::new(
-            http_client.clone(),
-            None,
-            DeploymentDetails::for_query_url(&escrow_subgraph_mock_server.uri()).unwrap(),
         )
         .await,
     ));
@@ -114,7 +107,6 @@ pub async fn start_agent(
         pgpool,
         indexer_allocations: indexer_allocations1,
         escrow_accounts_v2: escrow_accounts,
-        escrow_subgraph,
         network_subgraph,
         sender_aggregator_endpoints: sender_aggregator_endpoints.clone(),
         prefix: None,

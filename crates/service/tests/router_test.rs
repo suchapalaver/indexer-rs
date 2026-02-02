@@ -80,7 +80,6 @@ async fn full_integration_test() {
         })
         .service(indexer_config::ServiceConfig {
             serve_network_subgraph: false,
-            serve_escrow_subgraph: false,
             serve_auth_token: None,
             host_and_port: "0.0.0.0:0".parse().unwrap(),
             url_prefix: "/".into(),

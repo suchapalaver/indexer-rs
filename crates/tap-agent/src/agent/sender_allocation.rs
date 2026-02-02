@@ -255,8 +255,8 @@ pub struct SenderAllocationArgs<T: NetworkVersion> {
     pub sender: Address,
     /// Watcher containing the escrow accounts
     pub escrow_accounts: Receiver<EscrowAccounts>,
-    /// SubgraphClient of the escrow subgraph
-    pub escrow_subgraph: &'static SubgraphClient,
+    /// SubgraphClient of the network subgraph
+    pub network_subgraph: &'static SubgraphClient,
     /// Domain separator used for tap
     pub domain_separator: Eip712Domain,
     /// Reference to [super::sender_account::SenderAccount] actor
@@ -551,7 +551,7 @@ where
             allocation_id,
             sender,
             escrow_accounts,
-            escrow_subgraph,
+            network_subgraph,
             domain_separator,
             sender_account_ref,
             sender_aggregator,
@@ -564,8 +564,8 @@ where
                     config.indexer_address,
                     config.escrow_polling_interval,
                     sender,
-                    T::allocation_id_to_address(&allocation_id),
-                    escrow_subgraph,
+                    allocation_id.into(),
+                    network_subgraph,
                 )
                 .await,
             ),
@@ -1319,8 +1319,8 @@ pub mod tests {
     pub static SUBGRAPH_SERVICE_ADDRESS: [u8; 20] = [0x11u8; 20];
 
     #[rstest::fixture]
-    async fn mock_escrow_subgraph_server() -> (MockServer, MockGuard) {
-        mock_escrow_subgraph().await
+    async fn mock_network_subgraph_server() -> (MockServer, MockGuard) {
+        mock_network_subgraph().await
     }
 
     #[rstest::fixture]
@@ -1349,13 +1349,13 @@ pub mod tests {
     #[rstest::fixture]
     async fn state(
         #[future(awt)] pgpool: test_assets::TestDatabase,
-        #[future(awt)] mock_escrow_subgraph_server: (MockServer, MockGuard),
+        #[future(awt)] mock_network_subgraph_server: (MockServer, MockGuard),
     ) -> StateWithContainer {
-        let (mock_escrow_subgraph_server, _mock_escrow_subgraph_guard) =
-            mock_escrow_subgraph_server;
+        let (mock_network_subgraph_server, _mock_network_subgraph_guard) =
+            mock_network_subgraph_server;
         let args = create_sender_allocation_args()
             .pgpool(pgpool.pool.clone())
-            .escrow_subgraph_endpoint(&mock_escrow_subgraph_server.uri())
+            .network_subgraph_endpoint(&mock_network_subgraph_server.uri())
             .call()
             .await;
 
@@ -1366,35 +1366,30 @@ pub mod tests {
         }
     }
 
-    async fn mock_escrow_subgraph() -> (MockServer, MockGuard) {
+    async fn mock_network_subgraph() -> (MockServer, MockGuard) {
         let mock_ecrow_subgraph_server: MockServer = MockServer::start().await;
         let _mock_ecrow_subgraph = mock_ecrow_subgraph_server
-                .register_as_scoped(
-                    Mock::given(method("POST"))
-                        .and(body_string_contains("TapTransactions"))
-                        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": {
-                                "transactions": [{
-                                    "id": "0x00224ee6ad4ae77b817b4e509dc29d644da9004ad0c44005a7f34481d421256409000000"
-                                }],
-                            }
-                        }))),
-                )
-                .await;
+            .register_as_scoped(Mock::given(method("POST")).respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "data": { "graphTallyTokensCollecteds": [] }
+                })),
+            ))
+            .await;
         (mock_ecrow_subgraph_server, _mock_ecrow_subgraph)
     }
     #[bon::builder]
     async fn create_sender_allocation_args(
         pgpool: PgPool,
         sender_aggregator_endpoint: Option<String>,
-        escrow_subgraph_endpoint: &str,
+        network_subgraph_endpoint: &str,
         #[builder(default = 1000)] rav_request_receipt_limit: u64,
         sender_account: Option<ActorRef<SenderAccountMessage>>,
     ) -> SenderAllocationArgs<Horizon> {
-        let escrow_subgraph = Box::leak(Box::new(
+        let network_subgraph = Box::leak(Box::new(
             SubgraphClient::new(
                 reqwest::Client::new(),
                 None,
-                DeploymentDetails::for_query_url(escrow_subgraph_endpoint).unwrap(),
+                DeploymentDetails::for_query_url(network_subgraph_endpoint).unwrap(),
             )
             .await,
         ));
@@ -1434,7 +1429,7 @@ pub mod tests {
             .allocation_id(collection_id)
             .sender(SENDER.1)
             .escrow_accounts(escrow_accounts_rx)
-            .escrow_subgraph(escrow_subgraph)
+            .network_subgraph(network_subgraph)
             .domain_separator(TAP_EIP712_DOMAIN_SEPARATOR.clone())
             .sender_account_ref(sender_account_ref)
             .sender_aggregator(sender_aggregator)
@@ -1454,7 +1449,7 @@ pub mod tests {
     async fn create_sender_allocation(
         pgpool: PgPool,
         sender_aggregator_endpoint: Option<String>,
-        escrow_subgraph_endpoint: &str,
+        network_subgraph_endpoint: &str,
         #[builder(default = 1000)] rav_request_receipt_limit: u64,
         sender_account: Option<ActorRef<SenderAccountMessage>>,
     ) -> (
@@ -1464,7 +1459,7 @@ pub mod tests {
         let args = create_sender_allocation_args()
             .pgpool(pgpool)
             .maybe_sender_aggregator_endpoint(sender_aggregator_endpoint)
-            .escrow_subgraph_endpoint(escrow_subgraph_endpoint)
+            .network_subgraph_endpoint(network_subgraph_endpoint)
             .sender_account(sender_account.unwrap())
             .rav_request_receipt_limit(rav_request_receipt_limit)
             .call()
@@ -1482,7 +1477,7 @@ pub mod tests {
     #[tokio::test]
     async fn should_update_unaggregated_fees_on_start(
         #[future(awt)] pgpool: test_assets::TestDatabase,
-        #[future[awt]] mock_escrow_subgraph_server: (MockServer, MockGuard),
+        #[future[awt]] mock_network_subgraph_server: (MockServer, MockGuard),
     ) {
         let (mut last_message_emitted, sender_account) = create_mock_sender_account().await;
         // Add receipts to the database.
@@ -1495,7 +1490,7 @@ pub mod tests {
 
         let (sender_allocation, _notify) = create_sender_allocation()
             .pgpool(pgpool.pool.clone())
-            .escrow_subgraph_endpoint(&mock_escrow_subgraph_server.0.uri())
+            .network_subgraph_endpoint(&mock_network_subgraph_server.0.uri())
             .sender_account(sender_account)
             .call()
             .await;
@@ -1518,7 +1513,7 @@ pub mod tests {
     #[tokio::test]
     async fn should_return_invalid_receipts_on_startup(
         #[future(awt)] pgpool: test_assets::TestDatabase,
-        #[future[awt]] mock_escrow_subgraph_server: (MockServer, MockGuard),
+        #[future[awt]] mock_network_subgraph_server: (MockServer, MockGuard),
     ) {
         let (mut message_receiver, sender_account) = create_mock_sender_account().await;
         // Add receipts to the database.
@@ -1531,7 +1526,7 @@ pub mod tests {
 
         let (sender_allocation, _notify) = create_sender_allocation()
             .pgpool(pgpool.pool.clone())
-            .escrow_subgraph_endpoint(&mock_escrow_subgraph_server.0.uri())
+            .network_subgraph_endpoint(&mock_network_subgraph_server.0.uri())
             .sender_account(sender_account)
             .call()
             .await;
@@ -1557,13 +1552,13 @@ pub mod tests {
     #[tokio::test]
     async fn test_receive_new_receipt(
         #[future(awt)] pgpool: test_assets::TestDatabase,
-        #[future[awt]] mock_escrow_subgraph_server: (MockServer, MockGuard),
+        #[future[awt]] mock_network_subgraph_server: (MockServer, MockGuard),
     ) {
         let (mut message_receiver, sender_account) = create_mock_sender_account().await;
 
         let (sender_allocation, mut msg_receiver) = create_sender_allocation()
             .pgpool(pgpool.pool.clone())
-            .escrow_subgraph_endpoint(&mock_escrow_subgraph_server.0.uri())
+            .network_subgraph_endpoint(&mock_network_subgraph_server.0.uri())
             .sender_account(sender_account)
             .call()
             .await;
@@ -1630,11 +1625,27 @@ pub mod tests {
         mock_server
             .register(
                 Mock::given(method("POST"))
-                    .and(body_string_contains("transactions"))
-                    .respond_with(
-                        ResponseTemplate::new(200)
-                            .set_body_json(json!({ "data": { "transactions": []}})),
-                    ),
+                    .and(body_string_contains("graphTallyTokensCollecteds"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                        "data": { "graphTallyTokensCollecteds": [] }
+                    }))),
+            )
+            .await;
+        mock_server
+            .register(
+                Mock::given(method("POST")).respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(json!({ "data": { "graphTallyTokensCollecteds": [] } })),
+                ),
+            )
+            .await;
+        // Fallback for any other POSTs to avoid empty body errors.
+        mock_server
+            .register(
+                Mock::given(method("POST")).respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(json!({ "data": { "graphTallyTokensCollecteds": [] } })),
+                ),
             )
             .await;
 
@@ -1656,7 +1667,7 @@ pub mod tests {
         // Create a sender_allocation.
         let (sender_allocation, mut msg_receiver_alloc) = create_sender_allocation()
             .pgpool(pgpool.clone())
-            .escrow_subgraph_endpoint(&mock_server.uri())
+            .network_subgraph_endpoint(&mock_server.uri())
             .sender_account(sender_account)
             .call()
             .await;
@@ -1714,7 +1725,7 @@ pub mod tests {
         // Create a sender_allocation.
         let (sender_allocation, mut msg_receiver_alloc) = create_sender_allocation()
             .pgpool(pgpool.clone())
-            .escrow_subgraph_endpoint(&mock_server.uri())
+            .network_subgraph_endpoint(&mock_server.uri())
             .rav_request_receipt_limit(2000)
             .sender_account(sender_account)
             .call()
@@ -1783,14 +1794,14 @@ pub mod tests {
     #[tokio::test]
     async fn test_close_allocation_no_pending_fees(
         #[future(awt)] pgpool: test_assets::TestDatabase,
-        #[future[awt]] mock_escrow_subgraph_server: (MockServer, MockGuard),
+        #[future[awt]] mock_network_subgraph_server: (MockServer, MockGuard),
     ) {
         let (mut message_receiver, sender_account) = create_mock_sender_account().await;
 
         // create allocation
         let (sender_allocation, _notify) = create_sender_allocation()
             .pgpool(pgpool.pool.clone())
-            .escrow_subgraph_endpoint(&mock_escrow_subgraph_server.0.uri())
+            .network_subgraph_endpoint(&mock_network_subgraph_server.0.uri())
             .sender_account(sender_account)
             .call()
             .await;
@@ -1863,7 +1874,7 @@ pub mod tests {
                 "http://[::1]:{}",
                 mock_aggregator.address().port()
             ))
-            .escrow_subgraph_endpoint(&mock_server.uri())
+            .network_subgraph_endpoint(&mock_server.uri())
             .sender_account(sender_account)
             .call()
             .await;
@@ -1882,11 +1893,11 @@ pub mod tests {
     #[tokio::test]
     async fn should_return_unaggregated_fees_without_rav(
         #[future(awt)] pgpool: test_assets::TestDatabase,
-        #[future[awt]] mock_escrow_subgraph_server: (MockServer, MockGuard),
+        #[future[awt]] mock_network_subgraph_server: (MockServer, MockGuard),
     ) {
         let args = create_sender_allocation_args()
             .pgpool(pgpool.pool.clone())
-            .escrow_subgraph_endpoint(&mock_escrow_subgraph_server.0.uri())
+            .network_subgraph_endpoint(&mock_network_subgraph_server.0.uri())
             .call()
             .await;
         let state = SenderAllocationState::new(args).await.unwrap();
@@ -1910,11 +1921,11 @@ pub mod tests {
     #[tokio::test]
     async fn should_calculate_invalid_receipts_fee(
         #[future(awt)] pgpool: test_assets::TestDatabase,
-        #[future[awt]] mock_escrow_subgraph_server: (MockServer, MockGuard),
+        #[future[awt]] mock_network_subgraph_server: (MockServer, MockGuard),
     ) {
         let args = create_sender_allocation_args()
             .pgpool(pgpool.pool.clone())
-            .escrow_subgraph_endpoint(&mock_escrow_subgraph_server.0.uri())
+            .network_subgraph_endpoint(&mock_network_subgraph_server.0.uri())
             .call()
             .await;
         let state = SenderAllocationState::new(args).await.unwrap();
@@ -1944,11 +1955,11 @@ pub mod tests {
     #[tokio::test]
     async fn should_return_unaggregated_fees_with_rav(
         #[future(awt)] pgpool: test_assets::TestDatabase,
-        #[future[awt]] mock_escrow_subgraph_server: (MockServer, MockGuard),
+        #[future[awt]] mock_network_subgraph_server: (MockServer, MockGuard),
     ) {
         let args = create_sender_allocation_args()
             .pgpool(pgpool.pool.clone())
-            .escrow_subgraph_endpoint(&mock_escrow_subgraph_server.0.uri())
+            .network_subgraph_endpoint(&mock_network_subgraph_server.0.uri())
             .call()
             .await;
         let state = SenderAllocationState::new(args).await.unwrap();
@@ -2046,7 +2057,7 @@ pub mod tests {
     #[tokio::test]
     async fn test_failed_rav_request(
         #[future(awt)] pgpool: test_assets::TestDatabase,
-        #[future[awt]] mock_escrow_subgraph_server: (MockServer, MockGuard),
+        #[future[awt]] mock_network_subgraph_server: (MockServer, MockGuard),
     ) {
         // Add receipts to the database.
         for i in 0..10 {
@@ -2062,7 +2073,7 @@ pub mod tests {
         // Create a sender_allocation.
         let (sender_allocation, mut notify) = create_sender_allocation()
             .pgpool(pgpool.pool.clone())
-            .escrow_subgraph_endpoint(&mock_escrow_subgraph_server.0.uri())
+            .network_subgraph_endpoint(&mock_network_subgraph_server.0.uri())
             .sender_account(sender_account)
             .call()
             .await;
@@ -2098,18 +2109,21 @@ pub mod tests {
         // Start a mock graphql server using wiremock
         let mock_server = MockServer::start().await;
 
-        // Mock result for TAP redeem txs for (allocation, sender) pair.
+        // Mock result for redeemed allocation via GraphTallyTokensCollected.
         mock_server
             .register(
                 Mock::given(method("POST"))
-                    .and(body_string_contains("transactions"))
-                    .respond_with(ResponseTemplate::new(200).set_body_json(
-                        json!({ "data": { "transactions": [
-                            {
-                                "id": "redeemed"
-                            }
-                        ]}}),
-                    )),
+                    .and(body_string_contains("graphTallyTokensCollecteds"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                        "data": {
+                            "graphTallyTokensCollecteds": [
+                                {
+                                    "collectionId": CollectionId::from(ALLOCATION_ID_0).encode_hex(),
+                                    "tokens": "1"
+                                }
+                            ]
+                        }
+                    }))),
             )
             .await;
         // Add invalid receipts to the database. ( already redeemed )
@@ -2132,7 +2146,7 @@ pub mod tests {
 
         let (sender_allocation, mut notify) = create_sender_allocation()
             .pgpool(pgpool.clone())
-            .escrow_subgraph_endpoint(&mock_server.uri())
+            .network_subgraph_endpoint(&mock_server.uri())
             .sender_account(sender_account)
             .call()
             .await;

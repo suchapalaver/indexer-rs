@@ -116,7 +116,6 @@ url_prefix = "/"
 # Serve the network subgraph on `common.server.host_and_port`/network
 serve_network_subgraph = false
 # Serve the escrow subgraph on `common.server.host_and_port`/escrow
-serve_escrow_subgraph = false
 #### OPTIONAL VALUES ####
 ## use this to add a layer while serving network/escrow subgraph
 # serve_auth_token = "token"

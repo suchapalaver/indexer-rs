@@ -36,8 +36,8 @@
 //! [std::sync::Mutex]s aren't needed.
 
 use indexer_config::{
-    Config, EscrowSubgraphConfig, GraphNodeConfig, IndexerConfig, NetworkSubgraphConfig,
-    SubgraphConfig, SubgraphsConfig, TapConfig,
+    Config, GraphNodeConfig, IndexerConfig, NetworkSubgraphConfig, SubgraphConfig, SubgraphsConfig,
+    TapConfig,
 };
 use indexer_monitor::{escrow_accounts_v2, indexer_allocations, DeploymentDetails, SubgraphClient};
 use ractor::{concurrency::JoinHandle, Actor, ActorRef};
@@ -103,16 +103,7 @@ pub async fn start_agent() -> anyhow::Result<(
                             },
                         recently_closed_allocation_buffer_secs: recently_closed_allocation_buffer,
                     },
-                escrow:
-                    EscrowSubgraphConfig {
-                        config:
-                            SubgraphConfig {
-                                query_url: escrow_query_url,
-                                query_auth_token: escrow_query_auth_token,
-                                deployment_id: escrow_deployment_id,
-                                syncing_interval_secs: _escrow_sync_interval,
-                            },
-                    },
+                ..
             },
         tap: TapConfig {
             sender_aggregator_endpoints,
@@ -150,24 +141,6 @@ pub async fn start_agent() -> anyhow::Result<(
     )
     .await
     .with_context(|| "Failed to initialize indexer_allocations watcher")?;
-
-    let escrow_subgraph = Box::leak(Box::new(
-        SubgraphClient::new(
-            http_client.clone(),
-            escrow_deployment_id.map(|deployment| {
-                DeploymentDetails::for_graph_node_url(
-                    graph_node_status_endpoint.clone(),
-                    graph_node_query_endpoint.clone(),
-                    deployment,
-                )
-            }),
-            DeploymentDetails::for_query_url_with_token(
-                escrow_query_url.clone(),
-                escrow_query_auth_token.clone(),
-            ),
-        )
-        .await,
-    ));
 
     // Verify Horizon is active in the network (V1/Legacy mode removed)
     tracing::info!("Checking Network Subgraph for Horizon readiness");
@@ -216,7 +189,6 @@ pub async fn start_agent() -> anyhow::Result<(
         pgpool,
         indexer_allocations,
         escrow_accounts_v2,
-        escrow_subgraph,
         network_subgraph,
         sender_aggregator_endpoints: sender_aggregator_endpoints.clone(),
         prefix: None,
@@ -236,8 +208,6 @@ pub struct StartAgentArgs {
     pub pgpool: sqlx::PgPool,
     /// Network subgraph client (leaked static reference)
     pub network_subgraph: &'static SubgraphClient,
-    /// Escrow subgraph client (leaked static reference)
-    pub escrow_subgraph: &'static SubgraphClient,
     /// Indexer allocations watcher
     pub indexer_allocations: tokio::sync::watch::Receiver<
         std::collections::HashMap<
@@ -290,7 +260,6 @@ pub async fn start_agent_with_deps(
     let StartAgentArgs {
         pgpool,
         network_subgraph,
-        escrow_subgraph,
         indexer_allocations,
         escrow_accounts_v2,
         domain_separator_v2,
@@ -315,7 +284,6 @@ pub async fn start_agent_with_deps(
         pgpool,
         indexer_allocations,
         escrow_accounts_v2,
-        escrow_subgraph,
         network_subgraph,
         sender_aggregator_endpoints,
         prefix,

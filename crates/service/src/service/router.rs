@@ -17,8 +17,8 @@ use axum::{
 };
 use governor::{clock::QuantaInstant, middleware::NoOpMiddleware};
 use indexer_config::{
-    BlockchainConfig, EscrowSubgraphConfig, GraphNodeConfig, IndexerConfig, NetworkSubgraphConfig,
-    ServiceConfig, ServiceTapConfig,
+    BlockchainConfig, GraphNodeConfig, IndexerConfig, NetworkSubgraphConfig, ServiceConfig,
+    ServiceTapConfig,
 };
 use indexer_monitor::{
     attestation_signers, deployment_to_allocation, dispute_manager, indexer_allocations,
@@ -74,13 +74,6 @@ pub struct ServiceRouter {
     blockchain: BlockchainConfig,
     timestamp_buffer_secs: Duration,
 
-    // either provide subgraph or watcher
-    #[builder(with =
-        |subgraph: &'static SubgraphClient,
-        config: EscrowSubgraphConfig|
-        (subgraph, config))]
-    escrow_subgraph: Option<(&'static SubgraphClient, EscrowSubgraphConfig)>,
-
     escrow_accounts_v2: EscrowAccountsWatcher,
 
     // provide network subgraph or allocations + dispute manager
@@ -114,7 +107,6 @@ impl ServiceRouter {
         );
         let ServiceConfig {
             serve_network_subgraph,
-            serve_escrow_subgraph,
             serve_auth_token,
             url_prefix,
             tap: ServiceTapConfig {
@@ -206,32 +198,6 @@ impl ServiceRouter {
             }
             (_, true, _) => {
                 tracing::warn!("`serve_network_subgraph` is enabled but no `serve_auth_token` provided. Disabling it.");
-                Router::new()
-            }
-            _ => Router::new(),
-        };
-
-        // load serve_escrow_subgraph route
-        let serve_escrow_subgraph = match (
-            serve_auth_token.as_ref(),
-            serve_escrow_subgraph,
-            self.escrow_subgraph,
-        ) {
-            (Some(free_auth_token), true, Some((escrow_subgraph, _))) => {
-                tracing::info!("Serving escrow subgraph at /escrow");
-
-                let auth_layer = ValidateRequestHeaderLayer::bearer(free_auth_token);
-
-                Router::new().route(
-                    DEFAULT_ROUTE,
-                    post(static_subgraph_request_handler)
-                        .route_layer(auth_layer)
-                        .route_layer(static_subgraph_rate_limiter)
-                        .with_state(escrow_subgraph),
-                )
-            }
-            (_, true, _) => {
-                tracing::warn!("`serve_escrow_subgraph` is enabled but no `serve_auth_token` provided. Disabling it.");
                 Router::new()
             }
             _ => Router::new(),
@@ -418,7 +384,6 @@ impl ServiceRouter {
             .route("/", get("Service is up and running"))
             .route("/info", get(operator_address))
             .nest("/version", version)
-            .nest("/escrow", serve_escrow_subgraph)
             .nest("/network", serve_network_subgraph)
             .route(
                 "/subgraph/health/{deployment_id}",

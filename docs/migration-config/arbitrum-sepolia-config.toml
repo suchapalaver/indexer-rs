@@ -41,8 +41,6 @@ host_and_port = "0.0.0.0:${INDEXER_SERVICE_PORT}"
 # INDEXER_SERVICE__SERVE_NETWORK_SUBGRAPH
 # serve_network_subgraph = false
 # Serve the escrow subgraph on `common.server.host_and_port`/escrow
-# INDEXER_SERVICE__SERVE_ESCROW_SUBGRAPH
-# serve_escrow_subgraph = false
 
 free_query_auth_token = "${INDEXER_SERVICE_FREE_QUERY_AUTH_TOKEN}"
 

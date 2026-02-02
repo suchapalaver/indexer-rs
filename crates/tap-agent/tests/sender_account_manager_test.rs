@@ -52,22 +52,20 @@ async fn sender_account_manager_layer_test() {
                 }))),
         )
         .await;
-
-    let mock_escrow_subgraph_server: MockServer = MockServer::start().await;
-    mock_escrow_subgraph_server
-        .register(Mock::given(method("POST")).respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({ "data": {
-                    "transactions": [],
-                }
-            })),
-        ))
+    mock_network_subgraph_server
+        .register(
+            Mock::given(method("POST"))
+                .and(body_string_contains("graphTallyTokensCollecteds"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "data": { "graphTallyTokensCollecteds": [] }
+                }))),
+        )
         .await;
 
     let (prefix, mut msg_receiver, (actor, join_handle), _notification_tx) =
         create_sender_accounts_manager()
             .pgpool(pgpool.clone())
             .network_subgraph(&mock_network_subgraph_server.uri())
-            .escrow_subgraph(&mock_escrow_subgraph_server.uri())
             .initial_escrow_accounts_v2(EscrowAccounts::new(
                 HashMap::from([(SENDER.1, U256::from(ESCROW_VALUE))]),
                 HashMap::from([(SENDER.1, vec![SIGNER.1])]),

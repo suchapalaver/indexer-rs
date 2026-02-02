@@ -5,11 +5,13 @@ use std::time::Duration;
 
 use anyhow::anyhow;
 use indexer_monitor::SubgraphClient;
-use indexer_query::{tap_transactions, TapTransactions};
+use indexer_query::graph_tally_tokens_collected::{
+    self as graph_tally_tokens_collected, GraphTallyTokensCollectedQuery,
+};
 use indexer_watcher::new_watcher;
 use tap_core::receipt::checks::{Check, CheckError, CheckResult};
-use thegraph_core::alloy::primitives::Address;
-use tokio::sync::watch::Receiver;
+use thegraph_core::{alloy::primitives::Address, CollectionId};
+use tokio::sync::watch::{self, Receiver};
 
 use crate::tap::{CheckingReceipt, TapReceipt};
 
@@ -27,22 +29,34 @@ impl AllocationId {
         indexer_address: Address,
         escrow_polling_interval: Duration,
         sender_id: Address,
-        allocation_id: Address,
-        escrow_subgraph: &'static SubgraphClient,
+        collection_id: CollectionId,
+        network_subgraph: &'static SubgraphClient,
     ) -> Self {
-        let tap_allocation_redeemed = tap_allocation_redeemed_watcher(
-            allocation_id,
+        let tap_allocation_redeemed = match tap_allocation_redeemed_watcher(
+            collection_id,
             sender_id,
             indexer_address,
-            escrow_subgraph,
+            network_subgraph,
             escrow_polling_interval,
         )
         .await
-        .expect("Failed to initialize tap_allocation_redeemed_watcher");
+        {
+            Ok(rx) => rx,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    sender = %sender_id,
+                    indexer = %indexer_address,
+                    "Failed to initialize tap_allocation_redeemed_watcher; assuming not redeemed"
+                );
+                let (_tx, rx) = watch::channel(false);
+                rx
+            }
+        };
 
         Self {
             tap_allocation_redeemed,
-            allocation_id,
+            allocation_id: collection_id.as_address(),
         }
     }
 }
@@ -81,70 +95,90 @@ impl Check<TapReceipt> for AllocationId {
 }
 
 async fn tap_allocation_redeemed_watcher(
-    allocation_id: Address,
+    collection_id: CollectionId,
     sender_address: Address,
     indexer_address: Address,
-    escrow_subgraph: &'static SubgraphClient,
+    network_subgraph: &'static SubgraphClient,
     escrow_polling_interval: Duration,
 ) -> anyhow::Result<Receiver<bool>> {
     new_watcher(escrow_polling_interval, move || async move {
-        query_escrow_check_transactions(
-            allocation_id,
+        query_collected_tokens(
+            collection_id,
             sender_address,
             indexer_address,
-            escrow_subgraph,
+            network_subgraph,
         )
         .await
     })
     .await
 }
 
-async fn query_escrow_check_transactions(
-    allocation_id: Address,
+async fn query_collected_tokens(
+    collection_id: CollectionId,
     sender_address: Address,
     indexer_address: Address,
-    escrow_subgraph: &'static SubgraphClient,
+    network_subgraph: &'static SubgraphClient,
 ) -> anyhow::Result<bool> {
-    let response = escrow_subgraph
-        .query::<TapTransactions, _>(tap_transactions::Variables {
-            sender_id: sender_address.to_string().to_lowercase(),
-            receiver_id: indexer_address.to_string().to_lowercase(),
-            allocation_id: allocation_id.to_string().to_lowercase(),
+    let response = network_subgraph
+        .query::<GraphTallyTokensCollectedQuery, _>(graph_tally_tokens_collected::Variables {
+            payer: format!("{sender_address:x?}"),
+            receiver: format!("{indexer_address:x?}"),
+            collection_ids: vec![format!("{collection_id:x?}")],
         })
         .await?;
 
     response
-        .map(|data| !data.transactions.is_empty())
+        .map(|data| {
+            data.graph_tally_tokens_collecteds
+                .iter()
+                .any(|entry| entry.tokens.parse::<u128>().unwrap_or(0) > 0)
+        })
         .map_err(|err| anyhow!(err))
 }
 
 #[cfg(test)]
 mod tests {
     use indexer_monitor::{DeploymentDetails, SubgraphClient};
-    use thegraph_core::allocation_id;
+    use thegraph_core::CollectionId;
+    use wiremock::{matchers::body_string_contains, Mock, MockServer, ResponseTemplate};
+
+    use super::query_collected_tokens;
 
     #[tokio::test]
     async fn test_transaction_exists() {
-        // testnet values
-        let allocation_id = allocation_id!("43f8ebe0b6181117eb2dcf8ec7d4e894fca060b8").into_inner();
-        let sender_address = "0x21fed3c4340f67dbf2b78c670ebd1940668ca03e";
-        let indexer_address = "0x54d7db28ce0d0e2e87764cd09298f9e4e913e567";
-
-        let escrow_subgraph = Box::leak(Box::new(SubgraphClient::new(
-            reqwest::Client::new(),
-            None,
-            DeploymentDetails::for_query_url(
-                "https://api.studio.thegraph.com/query/53925/arb-sepolia-tap-subgraph/version/latest"
+        let mock_network_subgraph = MockServer::start().await;
+        mock_network_subgraph
+            .register(
+                Mock::given(body_string_contains("graphTallyTokensCollecteds")).respond_with(
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "data": {
+                            "graphTallyTokensCollecteds": [
+                                { "collectionId": "0x01", "tokens": "1" }
+                            ]
+                        }
+                    })),
+                ),
             )
-            .unwrap(),
-        ).await
+            .await;
+
+        let network_subgraph = Box::leak(Box::new(
+            SubgraphClient::new(
+                reqwest::Client::new(),
+                None,
+                DeploymentDetails::for_query_url(&mock_network_subgraph.uri()).unwrap(),
+            )
+            .await,
         ));
 
-        let result = super::query_escrow_check_transactions(
-            allocation_id,
-            sender_address.parse().unwrap(),
-            indexer_address.parse().unwrap(),
-            escrow_subgraph,
+        let result = query_collected_tokens(
+            CollectionId::from(thegraph_core::alloy::primitives::FixedBytes::<32>::ZERO),
+            "0x21fed3c4340f67dbf2b78c670ebd1940668ca03e"
+                .parse()
+                .unwrap(),
+            "0x54d7db28ce0d0e2e87764cd09298f9e4e913e567"
+                .parse()
+                .unwrap(),
+            network_subgraph,
         );
 
         assert!(result.await.unwrap());

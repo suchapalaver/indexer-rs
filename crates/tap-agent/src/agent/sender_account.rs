@@ -301,8 +301,6 @@ pub struct SenderAccountArgs {
     pub escrow_accounts: Receiver<EscrowAccounts>,
     /// Watcher of normalized allocation IDs (Horizon only)
     pub indexer_allocations: Receiver<HashSet<CollectionId>>,
-    /// SubgraphClient of the escrow subgraph
-    pub escrow_subgraph: &'static SubgraphClient,
     /// SubgraphClient of the network subgraph
     pub network_subgraph: &'static SubgraphClient,
     /// Domain separator used for horizon
@@ -377,8 +375,6 @@ pub struct State {
     /// Watcher containing the escrow accounts
     escrow_accounts: Receiver<EscrowAccounts>,
 
-    /// SubgraphClient of the escrow subgraph
-    escrow_subgraph: &'static SubgraphClient,
     /// SubgraphClient of the network subgraph
     network_subgraph: &'static SubgraphClient,
 
@@ -511,7 +507,7 @@ impl State {
             .allocation_id(collection_id)
             .sender(self.sender)
             .escrow_accounts(self.escrow_accounts.clone())
-            .escrow_subgraph(self.escrow_subgraph)
+            .network_subgraph(self.network_subgraph)
             .domain_separator(self.domain_separator_v2.clone())
             .sender_account_ref(sender_account_ref.clone())
             .sender_aggregator(self.aggregator_v2.clone())
@@ -1003,7 +999,6 @@ impl Actor for SenderAccount {
             sender_id,
             escrow_accounts,
             indexer_allocations,
-            escrow_subgraph,
             network_subgraph,
             domain_separator_v2,
             sender_aggregator_endpoint,
@@ -1360,7 +1355,6 @@ impl Actor for SenderAccount {
             retry_interval,
             adaptive_limiter: AdaptiveLimiter::new(INITIAL_RAV_REQUEST_CONCURRENT, 1..50),
             escrow_accounts,
-            escrow_subgraph,
             network_subgraph,
             domain_separator_v2,
             pgpool,
@@ -2070,21 +2064,35 @@ pub mod tests {
     const BUFFER_DURATION: Duration = Duration::from_millis(100);
     const RETRY_DURATION: Duration = Duration::from_millis(1000);
 
-    async fn setup_mock_escrow_subgraph() -> MockServer {
-        let mock_escrow_subgraph_server: MockServer = MockServer::start().await;
-        mock_escrow_subgraph_server
-                .register(
-                    Mock::given(method("POST"))
-                        .and(body_string_contains("TapTransactions"))
-                        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": {
-                                "transactions": [{
-                                    "id": "0x00224ee6ad4ae77b817b4e509dc29d644da9004ad0c44005a7f34481d421256409000000"
-                                }],
-                            }
-                        }))),
-                )
-                .await;
-        mock_escrow_subgraph_server
+    async fn setup_mock_network_subgraph() -> MockServer {
+        let mock_network_subgraph_server: MockServer = MockServer::start().await;
+        mock_network_subgraph_server
+            .register(
+                Mock::given(method("POST"))
+                    .and(body_string_contains("graphTallyTokensCollecteds"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                        "data": { "graphTallyTokensCollecteds": [] }
+                    }))),
+            )
+            .await;
+        mock_network_subgraph_server
+            .register(
+                Mock::given(method("POST"))
+                    .and(body_string_contains("ClosedAllocations"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": {
+                            "meta": {
+                                "block": {
+                                    "number": 1,
+                                    "hash": "hash",
+                                    "timestamp": 1
+                                }
+                            },
+                            "allocations": []
+                        }
+                    }))),
+            )
+            .await;
+        mock_network_subgraph_server
     }
 
     struct TestSenderAccount {
@@ -2144,7 +2152,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_update_allocation_ids() {
-        let mock_escrow_subgraph = setup_mock_escrow_subgraph().await;
+        // Horizon/V2 does not use escrow subgraph; provide a no-op endpoint for builder wiring.
         let test_db = test_assets::setup_shared_test_db().await;
         let pgpool = test_db.pool;
         // Start a mock graphql server using wiremock
@@ -2170,7 +2178,6 @@ pub mod tests {
 
         let (sender_account, mut msg_receiver, prefix, _, _, _) = create_sender_account()
             .pgpool(pgpool)
-            .escrow_subgraph_endpoint(&mock_escrow_subgraph.uri())
             .network_subgraph_endpoint(&mock_server.uri())
             .call()
             .await;
@@ -2262,7 +2269,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_new_allocation_id() {
-        let mock_escrow_subgraph = setup_mock_escrow_subgraph().await;
+        let _mock_network_subgraph = setup_mock_network_subgraph().await;
         let test_db = test_assets::setup_shared_test_db().await;
         let pgpool = test_db.pool;
         // Start a mock graphql server using wiremock
@@ -2288,7 +2295,6 @@ pub mod tests {
 
         let (sender_account, mut msg_receiver, prefix, _, _, _) = create_sender_account()
             .pgpool(pgpool)
-            .escrow_subgraph_endpoint(&mock_escrow_subgraph.uri())
             .network_subgraph_endpoint(&mock_server.uri())
             .call()
             .await;
@@ -2364,6 +2370,85 @@ pub mod tests {
 
         // safely stop the manager
         sender_account.stop_and_wait(None, None).await.unwrap();
+    }
+
+    #[test_log::test(tokio::test)]
+    async fn test_reconcile_rav_reorgs_reverts_when_collected_tokens_smaller() {
+        let mock_network_subgraph = MockServer::start().await;
+        let test_db = test_assets::setup_shared_test_db().await;
+        let pgpool = test_db.pool;
+
+        // Arrange: return collected tokens smaller than local final value.
+        mock_network_subgraph
+            .register(
+                Mock::given(method("POST"))
+                    .and(body_string_contains("graphTallyTokensCollecteds"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                        "data": {
+                            "graphTallyTokensCollecteds": [
+                                {
+                                    "collectionId": CollectionId::from(ALLOCATION_ID_0).encode_hex(),
+                                    "tokens": "5"
+                                }
+                            ]
+                        }
+                    }))),
+            )
+            .await;
+
+        let sender_id = SENDER.1;
+        let (sender_account, _msg_receiver, _prefix, _, _, _) = create_sender_account()
+            .pgpool(pgpool.clone())
+            .network_subgraph_endpoint(&mock_network_subgraph.uri())
+            .call()
+            .await;
+
+        // Seed a final RAV with a larger value than collected tokens.
+        let signed_rav = create_rav_v2(
+            CollectionId::from(ALLOCATION_ID_0).into_inner(),
+            SIGNER.0.clone(),
+            1,
+            10,
+        );
+        store_rav_v2_with_options()
+            .pgpool(&pgpool)
+            .signed_rav(signed_rav)
+            .sender(sender_id)
+            .last(true)
+            .final_rav(true)
+            .call()
+            .await
+            .expect("should store rav");
+
+        // Act: run reconciliation.
+        sender_account
+            .cast(SenderAccountMessage::ReconcileRavReorgs)
+            .unwrap();
+
+        // Assert: final flag is reverted.
+        let mut is_final = true;
+        for _ in 0..50 {
+            use sqlx::Row;
+            let row = sqlx::query(
+                r#"
+            SELECT final
+            FROM tap_horizon_ravs
+                WHERE collection_id = $1
+                "#,
+            )
+            .bind(CollectionId::from(ALLOCATION_ID_0).encode_hex())
+            .fetch_one(&pgpool)
+            .await
+            .expect("should query rav row");
+            is_final = row.get("final");
+            if !is_final {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!is_final, "RAV should be reverted to pending after reorg");
+
+        sender_account.stop(None);
     }
 
     fn get_current_timestamp_u64_ns() -> u64 {
@@ -2509,7 +2594,7 @@ pub mod tests {
     async fn test_remove_sender_account() {
         let test_db = test_assets::setup_shared_test_db().await;
         let pgpool = test_db.pool;
-        let mock_escrow_subgraph = setup_mock_escrow_subgraph().await;
+        let mock_network_subgraph = setup_mock_network_subgraph().await;
         let (sender_account, _, prefix, _, _, _) = create_sender_account()
             .pgpool(pgpool)
             .initial_allocation(
@@ -2517,7 +2602,7 @@ pub mod tests {
                     .into_iter()
                     .collect(),
             )
-            .escrow_subgraph_endpoint(&mock_escrow_subgraph.uri())
+            .network_subgraph_endpoint(&mock_network_subgraph.uri())
             .call()
             .await;
 
@@ -2743,7 +2828,7 @@ pub mod tests {
     async fn test_initialization_with_pending_ravs_over_the_limit() {
         let test_db = test_assets::setup_shared_test_db().await;
         let pgpool = test_db.pool;
-        let mock_escrow_subgraph = setup_mock_escrow_subgraph().await;
+        let mock_network_subgraph = setup_mock_network_subgraph().await;
 
         // add last non-final ravs (using V2 RAVs for Horizon sender accounts)
         let collection_id = *CollectionId::from(ALLOCATION_ID_0);
@@ -2764,7 +2849,7 @@ pub mod tests {
             .pgpool(pgpool.clone())
             .initial_allocation(initial_allocation)
             .max_amount_willing_to_lose_grt(u128::MAX)
-            .escrow_subgraph_endpoint(&mock_escrow_subgraph.uri())
+            .network_subgraph_endpoint(&mock_network_subgraph.uri())
             .call()
             .await;
 
@@ -3116,7 +3201,7 @@ pub mod tests {
         // with the current allocations from the watcher
         let test_db = test_assets::setup_shared_test_db().await;
         let pgpool = test_db.pool;
-        let mock_escrow_subgraph = setup_mock_escrow_subgraph().await;
+        let mock_network_subgraph = setup_mock_network_subgraph().await;
 
         let allocation_set = HashSet::from_iter([
             CollectionId::from(ALLOCATION_ID_0),
@@ -3126,8 +3211,7 @@ pub mod tests {
         let (sender_account, mut msg_receiver, _, _, indexer_allocations_tx, _) =
             create_sender_account()
                 .pgpool(pgpool)
-                .escrow_subgraph_endpoint(&mock_escrow_subgraph.uri())
-                .network_subgraph_endpoint(&mock_escrow_subgraph.uri())
+                .network_subgraph_endpoint(&mock_network_subgraph.uri())
                 .initial_allocation(allocation_set.clone())
                 .call()
                 .await;
@@ -3261,7 +3345,7 @@ pub mod tests {
     async fn test_reconcile_allocations_handles_empty_set() {
         let test_db = test_assets::setup_shared_test_db().await;
         let pgpool = test_db.pool;
-        let mock_escrow_subgraph = setup_mock_escrow_subgraph().await;
+        let mock_network_subgraph = setup_mock_network_subgraph().await;
 
         // Start with one allocation
         let initial_allocation_set = HashSet::from_iter([CollectionId::from(ALLOCATION_ID_0)]);
@@ -3269,8 +3353,7 @@ pub mod tests {
         let (sender_account, mut msg_receiver, _, _, indexer_allocations_tx, _) =
             create_sender_account()
                 .pgpool(pgpool)
-                .escrow_subgraph_endpoint(&mock_escrow_subgraph.uri())
-                .network_subgraph_endpoint(&mock_escrow_subgraph.uri())
+                .network_subgraph_endpoint(&mock_network_subgraph.uri())
                 .initial_allocation(initial_allocation_set)
                 .call()
                 .await;

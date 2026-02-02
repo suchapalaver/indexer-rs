@@ -545,7 +545,6 @@ pub struct BlockchainConfig {
 pub struct ServiceConfig {
     pub ipfs_url: Url,
     pub serve_network_subgraph: bool,
-    pub serve_escrow_subgraph: bool,
     pub serve_auth_token: Option<String>,
     pub host_and_port: SocketAddr,
     pub url_prefix: String,

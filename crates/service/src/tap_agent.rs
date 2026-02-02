@@ -62,7 +62,6 @@ impl TapAgentHandle {
 /// * `config` - Service configuration
 /// * `pgpool` - Database connection pool (shared with service)
 /// * `network_subgraph` - Network subgraph client
-/// * `escrow_subgraph` - Escrow subgraph client
 /// * `escrow_accounts_v2` - V2 escrow accounts watcher
 /// * `domain_separator_v2` - EIP-712 domain separator for V2
 /// * `is_horizon_enabled` - Whether Horizon mode is active
@@ -71,7 +70,6 @@ pub async fn start_tap_agent(
     config: &Config,
     pgpool: PgPool,
     network_subgraph: &'static SubgraphClient,
-    escrow_subgraph: &'static SubgraphClient,
     escrow_accounts_v2: Receiver<EscrowAccounts>,
     domain_separator_v2: Eip712Domain,
     is_horizon_enabled: bool,
@@ -99,7 +97,6 @@ pub async fn start_tap_agent(
     let args = StartAgentArgs {
         pgpool,
         network_subgraph,
-        escrow_subgraph,
         indexer_allocations,
         escrow_accounts_v2,
         domain_separator_v2,

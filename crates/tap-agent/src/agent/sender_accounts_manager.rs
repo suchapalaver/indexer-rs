@@ -185,8 +185,6 @@ pub struct SenderAccountsManagerArgs {
     pub indexer_allocations: Receiver<HashMap<Address, Allocation>>,
     /// Watcher containing the escrow accounts for v2
     pub escrow_accounts_v2: Receiver<EscrowAccounts>,
-    /// SubgraphClient of the escrow subgraph
-    pub escrow_subgraph: &'static SubgraphClient,
     /// SubgraphClient of the network subgraph
     pub network_subgraph: &'static SubgraphClient,
     /// Map containing all endpoints for senders provided in the config
@@ -218,7 +216,6 @@ pub struct State {
     indexer_allocations: Receiver<HashMap<Address, Allocation>>,
     /// Watcher containing the escrow accounts for v2
     escrow_accounts_v2: Receiver<EscrowAccounts>,
-    escrow_subgraph: &'static SubgraphClient,
     network_subgraph: &'static SubgraphClient,
     sender_aggregator_endpoints: HashMap<Address, Url>,
     prefix: Option<String>,
@@ -242,7 +239,6 @@ impl Actor for SenderAccountsManager {
             indexer_allocations,
             pgpool,
             escrow_accounts_v2,
-            escrow_subgraph,
             network_subgraph,
             sender_aggregator_endpoints,
             prefix,
@@ -277,7 +273,6 @@ impl Actor for SenderAccountsManager {
             pgpool: pgpool.clone(),
             indexer_allocations,
             escrow_accounts_v2: escrow_accounts_v2.clone(),
-            escrow_subgraph,
             network_subgraph,
             sender_aggregator_endpoints,
             prefix: prefix.clone(),
@@ -704,7 +699,6 @@ impl State {
             sender_id: *sender_id,
             escrow_accounts,
             indexer_allocations,
-            escrow_subgraph: self.escrow_subgraph,
             network_subgraph: self.network_subgraph,
             domain_separator_v2: self.domain_separator_v2.clone(),
             sender_aggregator_endpoint: self
@@ -1021,7 +1015,6 @@ mod tests {
                 pgpool,
                 indexer_allocations: watch::channel(HashMap::new()).1,
                 escrow_accounts_v2: watch::channel(escrow_accounts).1,
-                escrow_subgraph: get_subgraph_client().await,
                 network_subgraph: get_subgraph_client().await,
                 sender_aggregator_endpoints: HashMap::from([
                     (SENDER.1, Url::parse(&get_grpc_url().await).unwrap()),

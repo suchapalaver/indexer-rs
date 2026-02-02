@@ -135,7 +135,6 @@ subgraph_service_address = "${subgraph_service}"
 host_and_port = "0.0.0.0:${INDEXER_SERVICE}"
 url_prefix = "/"
 serve_network_subgraph = false
-serve_escrow_subgraph = false
 
 
 [service.tap]

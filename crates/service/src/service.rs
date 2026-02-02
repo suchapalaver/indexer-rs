@@ -215,14 +215,6 @@ pub async fn run() -> anyhow::Result<()> {
     let _tap_agent_handle = if config.agent.tap_agent_enabled {
         tracing::info!("Starting integrated TAP agent (unified binary mode)");
 
-        // Create escrow subgraph for TAP agent (separate reference since it's leaked)
-        let escrow_subgraph_for_tap = create_subgraph_client(
-            reqwest::Client::new(),
-            &config.graph_node,
-            &config.subgraphs.escrow.config,
-        )
-        .await;
-
         // For V2, TAP agent also needs an empty watcher if Horizon is not active
         let v2_watcher_for_tap_final =
             v2_watcher_for_tap.unwrap_or_else(indexer_monitor::empty_escrow_accounts_watcher);
@@ -231,7 +223,6 @@ pub async fn run() -> anyhow::Result<()> {
             &config,
             database.clone(),
             network_subgraph,
-            escrow_subgraph_for_tap,
             v2_watcher_for_tap_final,
             domain_separator_v2.clone(),
             is_horizon_active,

@@ -114,7 +114,6 @@ pub async fn create_sender_account(
     #[builder(default = HashSet::new())] initial_allocation: HashSet<CollectionId>,
     #[builder(default = TRIGGER_VALUE)] rav_request_trigger_value: u128,
     #[builder(default = TRIGGER_VALUE)] max_amount_willing_to_lose_grt: u128,
-    escrow_subgraph_endpoint: Option<&str>,
     network_subgraph_endpoint: Option<&str>,
     #[builder(default = RECEIPT_LIMIT)] rav_request_receipt_limit: u64,
     aggregator_endpoint: Option<Url>,
@@ -162,15 +161,6 @@ pub async fn create_sender_account(
         )
         .await,
     ));
-    let escrow_subgraph = Box::leak(Box::new(
-        SubgraphClient::new(
-            reqwest::Client::new(),
-            None,
-            DeploymentDetails::for_query_url(escrow_subgraph_endpoint.unwrap_or(DUMMY_URL))
-                .unwrap(),
-        )
-        .await,
-    ));
     let (escrow_accounts_tx, escrow_accounts_rx) = watch::channel(EscrowAccounts::default());
     escrow_accounts_tx
         .send(EscrowAccounts::new(
@@ -195,7 +185,6 @@ pub async fn create_sender_account(
         sender_id,
         escrow_accounts: escrow_accounts_rx,
         indexer_allocations: indexer_allocations_rx,
-        escrow_subgraph,
         network_subgraph,
         domain_separator_v2: TAP_EIP712_DOMAIN_SEPARATOR_V2.clone(),
         sender_aggregator_endpoint: aggregator_url,
@@ -229,7 +218,6 @@ pub async fn create_sender_account(
 pub async fn create_sender_accounts_manager(
     pgpool: PgPool,
     network_subgraph: Option<&str>,
-    escrow_subgraph: Option<&str>,
     initial_escrow_accounts_v2: Option<EscrowAccounts>,
 ) -> (
     String,
@@ -239,14 +227,6 @@ pub async fn create_sender_accounts_manager(
 ) {
     let config = get_sender_account_config();
     let (_allocations_tx, allocations_rx) = watch::channel(HashMap::new());
-    let escrow_subgraph = Box::leak(Box::new(
-        SubgraphClient::new(
-            reqwest::Client::new(),
-            None,
-            DeploymentDetails::for_query_url(escrow_subgraph.unwrap_or(DUMMY_URL)).unwrap(),
-        )
-        .await,
-    ));
     let network_subgraph = Box::leak(Box::new(
         SubgraphClient::new(
             reqwest::Client::new(),
@@ -270,7 +250,6 @@ pub async fn create_sender_accounts_manager(
         pgpool,
         indexer_allocations: allocations_rx,
         escrow_accounts_v2: escrow_accounts_rx_v2,
-        escrow_subgraph,
         network_subgraph,
         sender_aggregator_endpoints: HashMap::from([
             (SENDER.1, Url::parse(&get_grpc_url().await).unwrap()),
