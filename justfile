@@ -57,6 +57,10 @@ setup:
 phase4:
     ./docs/phase-4-execution.sh
 
+# Alloy standards (S-tier patterns + phased plan)
+alloy-standards:
+    @sed -n '1,200p' docs/alloy-standards.md
+
 # Stop all services
 down:
     cd contrib && docker compose -f docker-compose.yml down --remove-orphans

@@ -7,6 +7,7 @@
 - `docs/` contains design notes and contributor-facing docs.
 - `contrib/` and `contrib/local-network/` hold Docker Compose setups and network tooling.
 - `setup-test-network.sh` and `run_network.sh` bootstrap the local-network stack.
+- `docs/alloy-standards.md` defines Alloy usage standards and phased implementation.
 
 ## Build, Test, and Development Commands
 Use `just` for common workflows (see `justfile`):
@@ -17,6 +18,7 @@ Use `just` for common workflows (see `justfile`):
 - `just setup` boots the local network and services for integration tests.
 - `just test-local` / `just test-local-v2` run TAP integration tests against the local network.
 - `just phase4` runs the Phase 4 local-network execution script.
+- `just alloy-standards` prints the Alloy standards doc.
 
 Direct cargo examples:
 - `cargo build` (workspace build)
@@ -27,6 +29,7 @@ Direct cargo examples:
 - Rust formatting uses `rustfmt` (see `rustfmt.toml`).
 - Use standard Rust naming: `snake_case` for functions/vars, `CamelCase` for types, `SCREAMING_SNAKE_CASE` for constants.
 - Prefer explicit types for protocol identifiers (deployment IDs, allocation IDs, chain IDs) where possible.
+- Follow `docs/alloy-standards.md` for Alloy-specific conventions and phase gates.
 
 ## Testing Guidelines
 - Unit and integration tests are Rust `#[test]`/`#[tokio::test]`.

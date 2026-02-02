@@ -136,7 +136,7 @@ pub(crate) mod test {
 
     use build_info::chrono::Duration;
     use thegraph_core::alloy::{
-        primitives::{ruint::aliases::U256, Address},
+        primitives::{address, ruint::aliases::U256},
         sol_types::SolValue,
     };
     use uuid::Uuid;
@@ -165,9 +165,9 @@ pub(crate) mod test {
             voucher: IndexingAgreementVoucher {
                 agreement_id: id.as_bytes().into(),
                 deadline: (Utc::now() + Duration::days(30)).timestamp() as u64,
-                payer: Address::from_str("1234567890123456789012345678901234567890").unwrap(),
-                recipient: Address::from_str("2345678901234567890123456789012345678901").unwrap(),
-                service: Address::from_str("3456789012345678901234567890123456789012").unwrap(),
+                payer: address!("1234567890123456789012345678901234567890"),
+                recipient: address!("2345678901234567890123456789012345678901"),
+                service: address!("3456789012345678901234567890123456789012"),
                 durationEpochs: 30, // 30 epochs duration
                 maxInitialAmount: U256::from(1000),
                 maxOngoingAmountPerEpoch: U256::from(100),
@@ -217,9 +217,9 @@ pub(crate) mod test {
             voucher: IndexingAgreementVoucher {
                 agreement_id: id.as_bytes().into(),
                 deadline: (Utc::now() + Duration::days(30)).timestamp() as u64,
-                payer: Address::from_str("1234567890123456789012345678901234567890").unwrap(),
-                recipient: Address::from_str("2345678901234567890123456789012345678901").unwrap(),
-                service: Address::from_str("3456789012345678901234567890123456789012").unwrap(),
+                payer: address!("1234567890123456789012345678901234567890"),
+                recipient: address!("2345678901234567890123456789012345678901"),
+                service: address!("3456789012345678901234567890123456789012"),
                 durationEpochs: 30,
                 maxInitialAmount: U256::from(1000),
                 maxOngoingAmountPerEpoch: U256::from(100),
@@ -299,9 +299,9 @@ pub(crate) mod test {
             voucher: IndexingAgreementVoucher {
                 agreement_id: id.as_bytes().into(),
                 deadline: (Utc::now() + Duration::days(30)).timestamp() as u64,
-                payer: Address::from_str("1234567890123456789012345678901234567890").unwrap(),
-                recipient: Address::from_str("2345678901234567890123456789012345678901").unwrap(),
-                service: Address::from_str("3456789012345678901234567890123456789012").unwrap(),
+                payer: address!("1234567890123456789012345678901234567890"),
+                recipient: address!("2345678901234567890123456789012345678901"),
+                service: address!("3456789012345678901234567890123456789012"),
                 durationEpochs: 30,
                 maxInitialAmount: U256::from(1000),
                 maxOngoingAmountPerEpoch: U256::from(100),
