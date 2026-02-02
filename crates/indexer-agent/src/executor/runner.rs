@@ -1251,6 +1251,39 @@ mod tests {
         assert_ne!(signing_hash, alloy::primitives::B256::ZERO);
     }
 
+    #[test]
+    fn test_allocation_proof_eip712_manual_hash_matches() {
+        use alloy::{
+            primitives::{address, keccak256},
+            sol_types::{SolStruct, SolValue},
+        };
+
+        let indexer = address!("1234567890123456789012345678901234567890");
+        let allocation_id = address!("abcdefabcdefabcdefabcdefabcdefabcdefabcd");
+        let subgraph_service = address!("94dc3B65AF05a7A8d36B877eb5DE68B6B16B6389");
+        let domain = subgraph_service_eip712_domain(42161, subgraph_service);
+
+        let proof = AllocationIdProof {
+            indexer,
+            allocationId: allocation_id,
+        };
+
+        let type_hash = proof.eip712_type_hash();
+        let mut encoded = Vec::with_capacity(32 + proof.abi_encoded_size());
+        encoded.extend_from_slice(type_hash.as_slice());
+        encoded.extend_from_slice(&proof.abi_encode());
+        let struct_hash = keccak256(encoded);
+
+        let mut digest = Vec::with_capacity(2 + 32 + 32);
+        digest.extend_from_slice(&[0x19, 0x01]);
+        digest.extend_from_slice(domain.separator().as_slice());
+        digest.extend_from_slice(struct_hash.as_slice());
+        let manual = keccak256(digest);
+
+        let auto = proof.eip712_signing_hash(&domain);
+        assert_eq!(manual, auto);
+    }
+
     #[tokio::test]
     async fn test_allocation_proof_signature_recovery() {
         use alloy::{primitives::address, signers::local::PrivateKeySigner, sol_types::SolStruct};

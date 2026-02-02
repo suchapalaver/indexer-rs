@@ -4500,6 +4500,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "test-assets",
+ "thegraph-core",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

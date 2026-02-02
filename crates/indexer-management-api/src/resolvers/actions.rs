@@ -311,6 +311,7 @@ impl ActionMutation {
 mod tests {
     use async_graphql::Request;
     use test_assets::setup_shared_test_db;
+    use thegraph_core::allocation_id;
 
     use crate::build_schema;
 
@@ -363,5 +364,88 @@ mod tests {
             "0x0000000000000000000000000000000000000000000000000000000000000001"
         );
         assert_eq!(action["poiBlockNumber"], 10);
+    }
+
+    #[tokio::test]
+    async fn test_queue_actions_persists_explicit_poi_fields() {
+        let test_db = setup_shared_test_db().await;
+        let pool = test_db.pool.clone();
+        let schema = build_schema(pool.clone()).await;
+
+        let mutation = r#"
+            mutation QueueActions($actions: [ActionInput!]!) {
+              queueActions(actions: $actions) {
+                id
+                actionType
+                poi
+                publicPoi
+                poiBlockNumber
+              }
+            }
+        "#;
+
+        let allocation_id = allocation_id!("1234567890123456789012345678901234567890").to_string();
+
+        let variables = serde_json::json!({
+            "actions": [{
+                "actionType": "UNALLOCATE",
+                "deploymentId": "QmSWxvd8SaQK6qZKJ7xtfxCCGoRzGnoi2WNzmJYYJW9BXY",
+                "allocationId": allocation_id,
+                "source": "test",
+                "reason": "explicit poi",
+                "protocolNetwork": "eip155:1",
+                "poi": "0x0000000000000000000000000000000000000000000000000000000000000001",
+                "publicPoi": "0x0000000000000000000000000000000000000000000000000000000000000002",
+                "poiBlockNumber": 10
+            }]
+        });
+
+        let response = schema
+            .execute(
+                Request::new(mutation).variables(async_graphql::Variables::from_json(variables)),
+            )
+            .await;
+
+        assert!(
+            response.errors.is_empty(),
+            "unexpected errors: {:?}",
+            response.errors
+        );
+
+        let data = response.data.into_json().expect("response data");
+        let action = &data["queueActions"][0];
+        let action_id = action["id"].as_i64().expect("action id") as i32;
+        assert_eq!(action["actionType"], "UNALLOCATE");
+        assert_eq!(
+            action["poi"],
+            "0x0000000000000000000000000000000000000000000000000000000000000001"
+        );
+        assert_eq!(
+            action["publicPoi"],
+            "0x0000000000000000000000000000000000000000000000000000000000000002"
+        );
+        assert_eq!(action["poiBlockNumber"], 10);
+
+        let row: (Option<String>, Option<String>, Option<i32>) = sqlx::query_as(
+            r#"
+            SELECT poi, public_poi, poi_block_number
+            FROM "Actions"
+            WHERE id = $1
+            "#,
+        )
+        .bind(action_id)
+        .fetch_one(&pool)
+        .await
+        .expect("fetch action");
+
+        assert_eq!(
+            row.0.as_deref(),
+            Some("0x0000000000000000000000000000000000000000000000000000000000000001")
+        );
+        assert_eq!(
+            row.1.as_deref(),
+            Some("0x0000000000000000000000000000000000000000000000000000000000000002")
+        );
+        assert_eq!(row.2, Some(10));
     }
 }
