@@ -104,6 +104,7 @@ pub async fn start_agent(
             subgraph_service_address: thegraph_core::alloy::primitives::Address::ZERO,
         },
         allocation_reconciliation_interval: Duration::from_secs(2),
+        enable_rav_reorg_reconciliation: false,
     }));
 
     let (notification_tx, notification_rx) = mpsc::channel(10_000);

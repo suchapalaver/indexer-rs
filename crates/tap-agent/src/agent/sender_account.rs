@@ -447,6 +447,10 @@ pub struct SenderAccountConfig {
     /// Interval for periodic allocation reconciliation.
     /// This ensures stale allocations are detected after subgraph connectivity issues.
     pub allocation_reconciliation_interval: Duration,
+
+    /// Enable periodic RAV reorg reconciliation (network subgraph calls).
+    /// Defaults to true for production; tests may disable to avoid network calls.
+    pub enable_rav_reorg_reconciliation: bool,
 }
 
 impl SenderAccountConfig {
@@ -467,6 +471,8 @@ impl SenderAccountConfig {
             tap_mode: config.tap_mode(),
 
             allocation_reconciliation_interval: config.tap.allocation_reconciliation_interval_secs,
+
+            enable_rav_reorg_reconciliation: true,
         }
     }
 }
@@ -1316,16 +1322,18 @@ impl Actor for SenderAccount {
             interval.tick().await;
 
             // Run RAV reorg reconciliation at startup to catch reorgs during downtime
-            tracing::info!(
-                sender = %sender_for_log,
-                "Running initial RAV reorg reconciliation at startup"
-            );
-            if let Err(e) = myself_reconcile.cast(SenderAccountMessage::ReconcileRavReorgs) {
-                tracing::error!(
-                    error = ?e,
+            if config.enable_rav_reorg_reconciliation {
+                tracing::info!(
                     sender = %sender_for_log,
-                    "Error sending initial ReconcileRavReorgs message"
+                    "Running initial RAV reorg reconciliation at startup"
                 );
+                if let Err(e) = myself_reconcile.cast(SenderAccountMessage::ReconcileRavReorgs) {
+                    tracing::error!(
+                        error = ?e,
+                        sender = %sender_for_log,
+                        "Error sending initial ReconcileRavReorgs message"
+                    );
+                }
             }
 
             let mut tick_count: u64 = 0;
@@ -1348,7 +1356,7 @@ impl Actor for SenderAccount {
 
                 // Run RAV reorg reconciliation every 10 ticks (~5 minutes if interval is 30s)
                 // This checks for chain reorganizations that may have reverted RAV redemptions
-                if tick_count.is_multiple_of(10) {
+                if config.enable_rav_reorg_reconciliation && tick_count.is_multiple_of(10) {
                     tracing::debug!(
                         sender = %sender_for_log,
                         "Running periodic RAV reorg reconciliation"
@@ -3226,16 +3234,8 @@ pub mod tests {
             .call()
             .await;
 
-        // Pause time after actor creation (can't pause before because DB setup needs real time)
-        tokio::time::pause();
-
-        // The first tick is skipped, so we need to advance past the first interval
-        tokio::time::advance(reconciliation_interval).await;
-        tokio::task::yield_now().await;
-
-        // Advance time to trigger the periodic reconciliation
-        tokio::time::advance(reconciliation_interval).await;
-        tokio::task::yield_now().await;
+        // Allow the periodic task to tick with real time to avoid pause/advance edge cases.
+        tokio::time::sleep(reconciliation_interval * 2).await;
 
         // Should receive ReconcileAllocations message from the periodic task
         let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
@@ -3260,18 +3260,11 @@ pub mod tests {
         // Drain any UpdateAllocationIds message that follows ReconcileAllocations
         flush_messages(&mut msg_receiver).await;
 
-        // Resume time for shutdown operations
-        tokio::time::resume();
-
         // Stop the actor (this should abort the reconciliation task)
         sender_account.stop_and_wait(None, None).await.unwrap();
 
-        // Pause again to test that no more messages come after stop
-        tokio::time::pause();
-
-        // Advance time again - no more messages should be received since task is aborted
-        tokio::time::advance(reconciliation_interval * 2).await;
-        tokio::task::yield_now().await;
+        // Wait a couple intervals - no more messages should be received since task is aborted
+        tokio::time::sleep(reconciliation_interval * 2).await;
 
         // Count any remaining ReconcileAllocations messages (should be none)
         let mut reconcile_count = 0;
