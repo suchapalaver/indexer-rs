@@ -8,7 +8,7 @@ Build an S-tier, Horizon-only indexer stack with Alloy-first, compile-time-safe 
 - Relaxing validation or relying on runtime-only checks where types can enforce invariants.
 
 ## Alloy Standards (Repo-Specific)
-- **Providers**: Use `ProviderBuilder` + wallet fillers; keep per-(chain, signer) nonce isolation. Default to deterministic, explicit timeouts/retries and avoid hidden global state.
+- **Providers**: Use `ProviderBuilder::new()` (alloy 1.0.42 includes recommended fillers) + wallet fillers; keep per-(chain, signer) nonce isolation. Avoid `ProviderBuilder::default()` in production code.
 - **Contracts**: Use `sol!` and strongly typed call structs; avoid raw ABI encoding when typed calls are available.
 - **Addresses**: Use `address!` for literals; parse external strings at the boundary only.
 - **Types**: Prefer `BlockNumber`, `ChainId`, `TxHash`, `ProofOfIndexing`, `AllocationId`, `IndexerId` newtypes over primitives. Convert once at boundaries.

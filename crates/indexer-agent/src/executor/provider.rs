@@ -13,11 +13,9 @@ use alloy::{
     network::{Ethereum, EthereumWallet},
     primitives::Address,
     providers::{
-        fillers::{
-            BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller,
-            WalletFiller,
-        },
-        Identity, Provider, ProviderBuilder, RootProvider,
+        fillers::{FillProvider, JoinFill, WalletFiller},
+        utils::JoinedRecommendedFillers,
+        Provider, ProviderBuilder, RootProvider,
     },
     signers::local::PrivateKeySigner,
 };
@@ -25,7 +23,7 @@ use tokio::sync::RwLock;
 
 use super::errors::ExecutorError;
 
-/// Type alias for the provider with all recommended fillers.
+/// Type alias for the provider with Alloy's recommended fillers.
 ///
 /// This provider automatically handles:
 /// - Nonce management (cached for sequential transactions)
@@ -34,13 +32,7 @@ use super::errors::ExecutorError;
 /// - Blob gas filling (for EIP-4844)
 /// - Transaction signing
 pub type ExecutorProvider = FillProvider<
-    JoinFill<
-        JoinFill<
-            Identity,
-            JoinFill<GasFiller, JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>>,
-        >,
-        WalletFiller<EthereumWallet>,
-    >,
+    JoinFill<JoinedRecommendedFillers, WalletFiller<EthereumWallet>>,
     RootProvider<Ethereum>,
     Ethereum,
 >;
