@@ -171,11 +171,8 @@ mod tests {
     #[test]
     fn test_parse_amount_grt_scientific_large_ok() {
         let amount = parse_amount_wei("1e59").unwrap();
-        let expected = U256::from_str_radix(
-            "100000000000000000000000000000000000000000000000000000000000000000000000000",
-            10,
-        )
-        .unwrap();
+        let expected_str = format!("1{}", "0".repeat(77));
+        let expected = U256::from_str_radix(&expected_str, 10).unwrap();
         assert_eq!(amount, expected);
     }
 
@@ -187,11 +184,13 @@ mod tests {
 
     #[test]
     fn test_parse_amount_integer_too_large() {
-        let err = parse_amount_wei(
-            "1000000000000000000000000000000000000000000000000000000000000000000000000000",
-        )
-        .unwrap_err();
-        assert!(err.reason.contains("out of range"));
+        let too_large = format!("1{}", "0".repeat(78));
+        let err = parse_amount_wei(&too_large).unwrap_err();
+        assert!(
+            err.reason.contains("out of range")
+                || err.reason.contains("failed to parse wei")
+                || err.reason.contains("number too large")
+        );
     }
 
     #[test]

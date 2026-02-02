@@ -23,6 +23,8 @@ use crate::{
     rules::{evaluate_deployments, NetworkDeployment},
 };
 
+const MAX_EPOCH_READ_RETRIES: usize = 3;
+
 /// Default cooldown period in seconds (15 minutes, matching TypeScript agent).
 pub const DEFAULT_ACTION_COOLDOWN_SECS: u64 = 900;
 /// Default timeout for approved actions before reconciliation resumes (1 hour).
@@ -172,19 +174,31 @@ async fn run_reconciliation_cycle(
         );
     }
 
-    // Get current state from watchers, retry once if epoch ticks mid-read.
+    // Get current state from watchers with bounded retries if epoch ticks mid-read.
     let (deployments, allocations, current_epoch) = {
-        let epoch_before = *epoch_rx.borrow();
-        let deployments = deployments_rx.borrow().clone();
-        let allocations = allocations_rx.borrow().clone();
-        let epoch_after = *epoch_rx.borrow();
-        if epoch_before != epoch_after {
+        let mut attempt = 0;
+        loop {
+            let epoch_before = *epoch_rx.borrow();
             let deployments = deployments_rx.borrow().clone();
             let allocations = allocations_rx.borrow().clone();
-            let current_epoch = *epoch_rx.borrow();
-            (deployments, allocations, current_epoch)
-        } else {
-            (deployments, allocations, epoch_before)
+            let epoch_after = *epoch_rx.borrow();
+            if epoch_before == epoch_after {
+                break (deployments, allocations, epoch_before);
+            }
+
+            attempt += 1;
+            if attempt >= MAX_EPOCH_READ_RETRIES {
+                warn!(
+                    epoch_before,
+                    epoch_after,
+                    attempts = attempt,
+                    "Epoch changed during read; proceeding with latest snapshot"
+                );
+                let deployments = deployments_rx.borrow().clone();
+                let allocations = allocations_rx.borrow().clone();
+                let current_epoch = *epoch_rx.borrow();
+                break (deployments, allocations, current_epoch);
+            }
         }
     };
 
