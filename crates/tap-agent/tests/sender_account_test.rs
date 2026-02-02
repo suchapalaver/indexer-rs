@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 
 use indexer_tap_agent::{
-    agent::{sender_account::SenderAccountMessage, sender_accounts_manager::AllocationId},
+    agent::sender_account::SenderAccountMessage,
     test::{create_received_receipt, create_sender_account, store_receipt},
 };
 use ractor::concurrency::Duration;
@@ -49,7 +49,7 @@ async fn sender_account_layer_test() {
         .await;
 
     // we expect it to create a sender allocation
-    let allocation_ids = HashSet::from_iter([AllocationId(CollectionId::from(ALLOCATION_ID_0))]);
+    let allocation_ids = HashSet::from_iter([CollectionId::from(ALLOCATION_ID_0)]);
     sender_account
         .cast(SenderAccountMessage::UpdateAllocationIds(
             allocation_ids.clone(),

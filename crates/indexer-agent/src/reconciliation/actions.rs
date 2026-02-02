@@ -434,6 +434,7 @@ mod tests {
 
     use bigdecimal::BigDecimal;
     use test_assets::setup_shared_test_db;
+    use thegraph_core::allocation_id;
 
     use super::*;
     use crate::rules::{ActivationCriteria, MergedIndexingRule};
@@ -483,12 +484,13 @@ mod tests {
 
         let counter = metrics::ACTIONS_INVALID_INPUT_TOTAL.with_label_values(&["unallocate"]);
         let before = counter.get();
+        let allocation_id = allocation_id!("0000000000000000000000000000000000000001").to_string();
 
         let result = queue_unallocation_action(
             &pool,
             "invalid",
             "0x0000000000000000000000000000000000000000000000000000000000000001",
-            "0x0000000000000000000000000000000000000001",
+            &allocation_id,
             "invalid protocol network",
             false,
             false,

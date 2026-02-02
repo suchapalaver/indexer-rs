@@ -25,7 +25,10 @@ use tap_core::{
     },
     signed_message::Eip712SignedMessage,
 };
-use thegraph_core::alloy::{hex::ToHexExt, primitives::Address, sol_types::Eip712Domain};
+use thegraph_core::{
+    alloy::{hex::ToHexExt, primitives::Address, sol_types::Eip712Domain},
+    CollectionId,
+};
 use thiserror::Error;
 use tokio::sync::watch::Receiver;
 
@@ -301,6 +304,7 @@ impl<T> Actor for SenderAllocation<T>
 where
     SenderAllocationState<T>: DatabaseInteractions,
     T: NetworkVersion,
+    T::AllocationId: Copy + Into<CollectionId>,
     for<'a> &'a Eip712SignedMessage<T::Rav>: Into<RavInformation>,
     TapAgentContext<T>:
         RavRead<T::Rav> + RavStore<T::Rav> + ReceiptDelete + ReceiptRead<TapReceipt>,
@@ -318,14 +322,15 @@ where
         args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
         let sender_account_ref = args.sender_account_ref.clone();
-        let allocation_id = args.allocation_id.clone();
+        let allocation_id = args.allocation_id;
         let mut state = SenderAllocationState::new(args).await?;
+        let allocation_id_for_msg: CollectionId = allocation_id.into();
 
         // update invalid receipts
         state.invalid_receipts_fees = state.calculate_invalid_receipts_fee().await?;
         if state.invalid_receipts_fees.value > 0 {
             sender_account_ref.cast(SenderAccountMessage::UpdateInvalidReceiptFees(
-                T::to_allocation_id_enum(&allocation_id),
+                allocation_id_for_msg,
                 state.invalid_receipts_fees,
             ))?;
         }
@@ -333,7 +338,7 @@ where
         if let Ok(unaggregated) = state.recalculate_all_unaggregated_fees().await {
             state.unaggregated_fees = unaggregated;
             sender_account_ref.cast(SenderAccountMessage::UpdateReceiptFees(
-                T::to_allocation_id_enum(&allocation_id),
+                allocation_id_for_msg,
                 ReceiptFees::UpdateValue(unaggregated),
             ))?;
         } else {
@@ -348,7 +353,7 @@ where
         state.unaggregated_fees = state.recalculate_all_unaggregated_fees().await?;
 
         sender_account_ref.cast(SenderAccountMessage::UpdateReceiptFees(
-            T::to_allocation_id_enum(&allocation_id),
+            allocation_id_for_msg,
             ReceiptFees::UpdateValue(state.unaggregated_fees),
         ))?;
 
@@ -475,7 +480,7 @@ where
                 state
                     .sender_account_ref
                     .cast(SenderAccountMessage::UpdateReceiptFees(
-                        T::to_allocation_id_enum(&state.allocation_id),
+                        state.allocation_id.into(),
                         ReceiptFees::NewReceipt(fees, timestamp_ns),
                     ))?;
             }
@@ -488,7 +493,7 @@ where
                 state
                     .sender_account_ref
                     .cast(SenderAccountMessage::UpdateReceiptFees(
-                        T::to_allocation_id_enum(&state.allocation_id),
+                        state.allocation_id.into(),
                         ReceiptFees::RavRequestResponse(
                             state.unaggregated_fees,
                             rav_result.map(|res| res.map(Into::into)),
@@ -502,7 +507,7 @@ where
                         state
                             .sender_account_ref
                             .cast(SenderAccountMessage::UpdateReceiptFees(
-                                T::to_allocation_id_enum(&state.allocation_id),
+                                state.allocation_id.into(),
                                 ReceiptFees::UpdateValue(unaggregated),
                             ))?;
                     }
@@ -533,6 +538,7 @@ where
 impl<T> SenderAllocationState<T>
 where
     T: NetworkVersion,
+    T::AllocationId: Copy + Into<CollectionId>,
     TapAgentContext<T>:
         RavRead<T::Rav> + RavStore<T::Rav> + ReceiptDelete + ReceiptRead<TapReceipt>,
     SenderAllocationState<T>: DatabaseInteractions,
@@ -879,7 +885,7 @@ where
             });
         self.sender_account_ref
             .cast(SenderAccountMessage::UpdateInvalidReceiptFees(
-                T::to_allocation_id_enum(&self.allocation_id),
+                self.allocation_id.into(),
                 self.invalid_receipts_fees,
             ))?;
 
@@ -1299,7 +1305,7 @@ pub mod tests {
     use crate::{
         agent::{
             sender_account::{ReceiptFees, SenderAccountMessage},
-            sender_accounts_manager::{AllocationId, NewReceiptNotification},
+            sender_accounts_manager::NewReceiptNotification,
             sender_allocation::DatabaseInteractions,
         },
         tap::{context::Horizon, CheckingReceipt},
@@ -1599,7 +1605,7 @@ pub mod tests {
         insta::assert_debug_snapshot!(startup_load_msg);
 
         let expected_message = SenderAccountMessage::UpdateReceiptFees(
-            AllocationId(CollectionId::from(ALLOCATION_ID_0)),
+            CollectionId::from(ALLOCATION_ID_0),
             ReceiptFees::NewReceipt(20u128, timestamp_ns),
         );
         let mut found = false;

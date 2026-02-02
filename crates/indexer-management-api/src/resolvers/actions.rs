@@ -319,6 +319,7 @@ mod tests {
     async fn test_queue_actions_with_explicit_poi_block_number() {
         let test_db = setup_shared_test_db().await;
         let schema = build_schema(test_db.pool).await;
+        let allocation_id = allocation_id!("1234567890123456789012345678901234567890").to_string();
 
         let mutation = r#"
             mutation QueueActions($actions: [ActionInput!]!) {
@@ -335,7 +336,7 @@ mod tests {
             "actions": [{
                 "actionType": "UNALLOCATE",
                 "deploymentId": "QmSWxvd8SaQK6qZKJ7xtfxCCGoRzGnoi2WNzmJYYJW9BXY",
-                "allocationId": "0x1234567890123456789012345678901234567890",
+                "allocationId": allocation_id,
                 "source": "test",
                 "reason": "explicit poi",
                 "protocolNetwork": "eip155:1",

@@ -3,7 +3,6 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    fmt::Display,
     str::FromStr,
     sync::LazyLock,
     time::Duration,
@@ -79,20 +78,20 @@ impl NewReceiptNotification {
         self.value
     }
 
-    /// Get the allocation ID as a unified type
+    /// Get the collection ID as a unified type
     #[tracing::instrument(skip(self), ret)]
-    pub fn allocation_id(&self) -> AllocationId {
+    pub fn collection_id(&self) -> CollectionId {
         // Convert the hex string to CollectionId (trim spaces from fixed-length DB field)
         let trimmed = self.collection_id.trim();
         match CollectionId::from_str(trimmed) {
-            Ok(collection_id) => AllocationId(collection_id),
+            Ok(collection_id) => collection_id,
             Err(e) => {
                 // Check if this is a 20-byte address (40 hex chars) from migration period
                 // TRST-L-9: Always route V2 receipts to Horizon, never downgrade to Legacy
                 let hex_str = trimmed.strip_prefix("0x").unwrap_or(trimmed);
                 if hex_str.len() == 64 {
                     match CollectionId::from_str(&format!("0x{hex_str}")) {
-                        Ok(collection_id) => return AllocationId(collection_id),
+                        Ok(collection_id) => return collection_id,
                         Err(hex_err) => {
                             tracing::error!(
                                 collection_id = %self.collection_id,
@@ -111,7 +110,7 @@ impl NewReceiptNotification {
                                 address = %address,
                                 "Converting 20-byte address to CollectionId for V2 receipt"
                             );
-                            return AllocationId(CollectionId::from(address));
+                            return CollectionId::from(address);
                         }
                         Err(addr_err) => {
                             tracing::error!(
@@ -130,7 +129,7 @@ impl NewReceiptNotification {
                     );
                 }
                 // Fallback: use zero CollectionId but stay on Horizon path
-                AllocationId(CollectionId::from(Address::ZERO))
+                CollectionId::from(Address::ZERO)
             }
         }
     }
@@ -140,43 +139,9 @@ impl NewReceiptNotification {
 #[derive(Debug, Clone)]
 pub struct SenderAccountsManager;
 
-/// Wrapped AllocationId for Horizon (V2) collection ids.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct AllocationId(pub CollectionId);
-
-impl AllocationId {
-    /// Canonical hex (no 0x); 64 chars for Horizon
-    pub fn to_hex(&self) -> String {
-        self.0.encode_hex()
-    }
-
-    /// Get an Address representation for Horizon collection ids
-    pub fn address(&self) -> Address {
-        self.0.as_address()
-    }
-
-    /// Normalized 20-byte address as lowercase hex (no 0x prefix).
-    ///
-    /// Behavior:
-    /// - Horizon (V2): derives the 20-byte address from the 32-byte `CollectionId`
-    ///   via `thegraph_core::AllocationId::from(collection_id)` (last 20 bytes) and encodes as hex.
-    ///
-    /// Use for:
-    /// - Actor names and routing (consistent identity across versions)
-    /// - Metrics labels (uniform 20-byte form)
-    /// - Network subgraph queries (which expect allocation addresses)
-    ///
-    /// Do NOT use for Horizon database queries where `collection_id` is stored
-    /// as 32-byte hex; use `to_hex()` / `CollectionId::encode_hex()` instead.
-    pub fn address_hex(&self) -> String {
-        self.address().encode_hex()
-    }
-}
-
-impl Display for AllocationId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
+/// Canonical hex (no 0x); 64 chars for Horizon.
+fn collection_id_hex(collection_id: &CollectionId) -> String {
+    format!("{:x}", collection_id)
 }
 
 /// Type used in [SenderAccountsManager] and [SenderAccount] to route Horizon-specific logic.
@@ -487,7 +452,7 @@ impl State {
         &self,
         supervisor: ActorCell,
         sender_id: Address,
-        allocation_ids: HashSet<AllocationId>,
+        allocation_ids: HashSet<CollectionId>,
         sender_type: SenderType,
     ) {
         tracing::info!(
@@ -499,7 +464,7 @@ impl State {
         for alloc_id in &allocation_ids {
             tracing::debug!(
                 allocation_id = %alloc_id,
-                address = %alloc_id.address(),
+                address = %alloc_id.as_address(),
                 "Initial allocation",
             );
         }
@@ -526,7 +491,7 @@ impl State {
         &self,
         supervisor: ActorCell,
         sender_id: Address,
-        allocation_ids: HashSet<AllocationId>,
+        allocation_ids: HashSet<CollectionId>,
         sender_type: SenderType,
     ) -> anyhow::Result<()> {
         let Ok(args) = self.new_sender_account_args(&sender_id, allocation_ids, sender_type) else {
@@ -560,10 +525,10 @@ impl State {
     /// and try to finalize them if they have become ineligible.
     ///
     /// This loads horizon allocations
-    async fn get_pending_sender_allocation_id_v2(&self) -> HashMap<Address, HashSet<AllocationId>> {
+    async fn get_pending_sender_allocation_id_v2(&self) -> HashMap<Address, HashSet<CollectionId>> {
         // First we accumulate all allocations for each sender. This is because we may have more
         // than one signer per sender in DB.
-        let mut unfinalized_sender_allocations_map: HashMap<Address, HashSet<AllocationId>> =
+        let mut unfinalized_sender_allocations_map: HashMap<Address, HashSet<CollectionId>> =
             HashMap::new();
 
         let receipts_signer_collections_in_db = sqlx::query!(
@@ -606,12 +571,12 @@ impl State {
                             // 20-byte address -> convert to CollectionId using From<Address>
                             let address = Address::from_str(&format!("0x{hex_str}"))
                                 .unwrap_or_else(|e| panic!("Invalid address '{trimmed}': {e}"));
-                            AllocationId(CollectionId::from(address))
+                            CollectionId::from(address)
                         } else if hex_str.len() == 64 {
                             // 32-byte CollectionId
-                            AllocationId(CollectionId::from_str(&format!("0x{hex_str}")).unwrap_or_else(|e| {
+                            CollectionId::from_str(&format!("0x{hex_str}")).unwrap_or_else(|e| {
                                 panic!("Invalid collection_id '{trimmed}': {e}")
-                            }))
+                            })
                         } else {
                             panic!("Invalid collection_id length '{}': expected 40 or 64 hex characters, got {}", trimmed, hex_str.len())
                         }
@@ -657,17 +622,15 @@ impl State {
                 let allocation_ids = allocation_id_strings
                     .iter()
                     .map(|collection_id| {
-                        AllocationId({
-                            let trimmed = collection_id.trim();
-                            let hex_str = trimmed.strip_prefix("0x").unwrap_or(trimmed);
-                            let prefixed = if hex_str.len() == 64 {
-                                format!("0x{hex_str}")
-                            } else {
-                                trimmed.to_string()
-                            };
-                            CollectionId::from_str(&prefixed)
-                                .expect("collection_id should be a valid collection ID")
-                        })
+                        let trimmed = collection_id.trim();
+                        let hex_str = trimmed.strip_prefix("0x").unwrap_or(trimmed);
+                        let prefixed = if hex_str.len() == 64 {
+                            format!("0x{hex_str}")
+                        } else {
+                            trimmed.to_string()
+                        };
+                        CollectionId::from_str(&prefixed)
+                            .expect("collection_id should be a valid collection ID")
                     })
                     .collect::<HashSet<_>>();
 
@@ -697,7 +660,7 @@ impl State {
     fn new_sender_account_args(
         &self,
         sender_id: &Address,
-        allocation_ids: HashSet<AllocationId>,
+        allocation_ids: HashSet<CollectionId>,
         sender_type: SenderType,
     ) -> anyhow::Result<SenderAccountArgs> {
         let escrow_accounts = self.escrow_accounts_v2.clone();
@@ -710,7 +673,7 @@ impl State {
                 let total = alloc_map.len();
                 let mut legacy_count = 0usize;
                 let mut horizon_count = 0usize;
-                let set: HashSet<AllocationId> = alloc_map
+                let set: HashSet<CollectionId> = alloc_map
                     .iter()
                     .filter_map(|(addr, alloc)| {
                         if alloc.is_legacy {
@@ -718,7 +681,7 @@ impl State {
                             None
                         } else {
                             horizon_count += 1;
-                            Some(AllocationId(CollectionId::from(*addr)))
+                            Some(CollectionId::from(*addr))
                         }
                     })
                     .collect();
@@ -831,7 +794,7 @@ async fn channel_receipts_watcher(
     skip_all,
     fields(
         sender_address = %new_receipt_notification.signer_address(),
-        allocation_id = %new_receipt_notification.allocation_id(),
+        collection_id = %new_receipt_notification.collection_id(),
     )
 )]
 async fn handle_notification(
@@ -869,8 +832,8 @@ async fn handle_notification(
         );
     };
 
-    let allocation_id = new_receipt_notification.allocation_id();
-    let allocation_str = allocation_id.to_hex();
+    let collection_id = new_receipt_notification.collection_id();
+    let allocation_str = collection_id_hex(&collection_id);
     tracing::info!(
         sender_address = %sender_address,
         collection_id = %allocation_str,
@@ -881,7 +844,7 @@ async fn handle_notification(
 
     // For actor lookup, use the address format that matches how actors are created
     // "0x...."
-    let allocation_for_actor_name = allocation_id.address().to_string();
+    let allocation_for_actor_name = collection_id.as_address().to_string();
 
     let actor_name = format!(
         "{}{sender_address}:{allocation_for_actor_name}",
@@ -895,14 +858,14 @@ async fn handle_notification(
     // otherwise there is a mistmatch!!!!
     tracing::debug!(
         actor_name,
-        allocation_id = %allocation_id,
+        allocation_id = %collection_id,
         "Looking for SenderAllocation actor",
     );
 
     let Some(sender_allocation) = ActorRef::<SenderAllocationMessage>::where_is(actor_name) else {
         tracing::warn!(
             sender_address=%sender_address,
-            allocation_id=%allocation_id,
+            allocation_id=%collection_id,
             "No sender_allocation found for sender_address and allocation_id to process new \
                 receipt notification. Starting a new sender_allocation.",
         );
@@ -918,7 +881,7 @@ async fn handle_notification(
         );
         tracing::debug!(
             sender_account_name,
-            allocation_id = %allocation_id,
+            allocation_id = %collection_id,
             "Looking for SenderAccount",
         );
 
@@ -930,7 +893,7 @@ async fn handle_notification(
             );
         };
         sender_account
-            .cast(SenderAccountMessage::NewAllocationId(allocation_id))
+            .cast(SenderAccountMessage::NewAllocationId(collection_id))
             .map_err(|e| {
                 anyhow!(
                     "Error while sendeing new allocation id message to sender_account: {:?}",
@@ -1296,7 +1259,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_allocation_id() {
+    async fn test_create_collection_id() {
         let senders_to_signers = vec![(SENDER.1, vec![SIGNER.1])].into_iter().collect();
         let escrow_accounts = EscrowAccounts::new(HashMap::new(), senders_to_signers);
         let escrow_accounts = watch::channel(escrow_accounts).1;

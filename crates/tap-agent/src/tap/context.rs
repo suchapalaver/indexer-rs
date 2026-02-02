@@ -43,11 +43,6 @@ pub trait NetworkVersion: Send + Sync + 'static {
     /// Extract an Address for legacy compatibility (used for messaging)
     fn allocation_id_to_address(id: &Self::AllocationId) -> Address;
 
-    /// Convert to the AllocationId enum for messaging
-    fn to_allocation_id_enum(
-        id: &Self::AllocationId,
-    ) -> crate::agent::sender_accounts_manager::AllocationId;
-
     /// Sol struct returned from an aggregation
     ///
     /// Usually this is wrapped around a [Eip712SignedMessage].
@@ -94,12 +89,6 @@ impl NetworkVersion for Horizon {
 
     fn allocation_id_to_address(id: &Self::AllocationId) -> Address {
         AllocationIdCore::from(*id).into_inner()
-    }
-
-    fn to_allocation_id_enum(
-        id: &Self::AllocationId,
-    ) -> crate::agent::sender_accounts_manager::AllocationId {
-        crate::agent::sender_accounts_manager::AllocationId(*id)
     }
 
     async fn aggregate(

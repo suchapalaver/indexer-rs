@@ -35,7 +35,7 @@ use tonic::transport::{Channel, Endpoint};
 use tracing::Level;
 
 use super::{
-    sender_accounts_manager::{AllocationId, SenderType},
+    sender_accounts_manager::SenderType,
     sender_allocation::{
         AllocationConfig, SenderAllocation, SenderAllocationArgs, SenderAllocationMessage,
     },
@@ -237,18 +237,18 @@ pub enum SenderAccountMessage {
     UpdateBalanceAndLastRavs(Balance, RavMap),
     /// Spawn and Stop SenderAllocations that were added or removed
     /// in comparision with it current state and updates the state
-    UpdateAllocationIds(HashSet<AllocationId>),
+    UpdateAllocationIds(HashSet<CollectionId>),
     /// Manual request to create a new Sender Allocation
-    NewAllocationId(AllocationId),
+    NewAllocationId(CollectionId),
     /// Updates the fee tracker for a given allocation
     ///
     /// All allowing or denying logic is called inside the message handler
     /// as well as requesting the underlaying allocation rav request
     ///
     /// Custom behavior is defined in [ReceiptFees]
-    UpdateReceiptFees(AllocationId, ReceiptFees),
+    UpdateReceiptFees(CollectionId, ReceiptFees),
     /// Updates the counter for invalid receipts and verify to deny sender
-    UpdateInvalidReceiptFees(AllocationId, UnaggregatedReceipts),
+    UpdateInvalidReceiptFees(CollectionId, UnaggregatedReceipts),
     /// Update rav tracker
     UpdateRav(RavInformation),
     /// Periodic reconciliation to detect stale allocations.
@@ -300,7 +300,7 @@ pub struct SenderAccountArgs {
     /// Watcher that returns a list of escrow accounts for current indexer
     pub escrow_accounts: Receiver<EscrowAccounts>,
     /// Watcher of normalized allocation IDs (Horizon only)
-    pub indexer_allocations: Receiver<HashSet<AllocationId>>,
+    pub indexer_allocations: Receiver<HashSet<CollectionId>>,
     /// SubgraphClient of the escrow subgraph
     pub escrow_subgraph: &'static SubgraphClient,
     /// SubgraphClient of the network subgraph
@@ -310,7 +310,7 @@ pub struct SenderAccountArgs {
     /// Endpoint URL for aggregator server
     pub sender_aggregator_endpoint: Url,
     /// List of allocation ids that must created at startup
-    pub allocation_ids: HashSet<AllocationId>,
+    pub allocation_ids: HashSet<CollectionId>,
     /// Prefix used to bypass limitations of global actor registry (used for tests)
     pub prefix: Option<String>,
 
@@ -350,7 +350,7 @@ pub struct State {
     /// Simple tracker used to monitor all invalid receipts ever.
     invalid_receipts_tracker: SimpleFeeTracker,
     /// Set containing current active allocations
-    allocation_ids: HashSet<AllocationId>,
+    allocation_ids: HashSet<CollectionId>,
     /// Scheduler used to send a retry message in case sender is denied
     ///
     /// If scheduler is set, it's canceled in the first [SenderAccountMessage::UpdateReceiptFees]
@@ -406,7 +406,7 @@ pub struct State {
     config: &'static SenderAccountConfig,
 
     /// Watcher for allocation IDs, used for periodic reconciliation
-    indexer_allocations: Receiver<HashSet<AllocationId>>,
+    indexer_allocations: Receiver<HashSet<CollectionId>>,
 
     /// Handle for the periodic reconciliation task
     reconciliation_handle: Option<JoinHandle<()>>,
@@ -485,7 +485,7 @@ impl State {
     async fn create_sender_allocation(
         &self,
         sender_account_ref: ActorRef<SenderAccountMessage>,
-        allocation_id: AllocationId,
+        allocation_id: CollectionId,
     ) -> anyhow::Result<()> {
         tracing::trace!(
             %self.sender,
@@ -494,7 +494,7 @@ impl State {
         );
 
         // Check if actor already exists to prevent race condition during concurrent creation attempts
-        let actor_name = self.format_sender_allocation(&allocation_id.address());
+        let actor_name = self.format_sender_allocation(&allocation_id.as_address());
         if ActorRef::<SenderAllocationMessage>::where_is(actor_name.clone()).is_some() {
             tracing::debug!(
                 %self.sender,
@@ -505,7 +505,7 @@ impl State {
             return Ok(());
         }
 
-        let collection_id = allocation_id.0;
+        let collection_id: CollectionId = allocation_id;
         let args = SenderAllocationArgs::builder()
             .pgpool(self.pgpool.clone())
             .allocation_id(collection_id)
@@ -727,17 +727,17 @@ impl State {
     /// if they are really closed in the subgraph
     async fn check_closed_allocations(
         &self,
-        allocation_ids: HashSet<&AllocationId>,
+        allocation_ids: HashSet<&CollectionId>,
     ) -> anyhow::Result<HashSet<Address>> {
         if allocation_ids.is_empty() {
             return Ok(HashSet::new());
         }
         // We don't need to check what type of allocation it is since
         // legacy allocation ids can't be reused for horizon
-        // Use .address() to get the 20-byte allocation address for both Legacy and Horizon
+        // Use .as_address() to get the 20-byte allocation address for both Legacy and Horizon
         let allocation_ids: Vec<String> = allocation_ids
             .into_iter()
-            .map(|addr| addr.address().to_string().to_lowercase())
+            .map(|addr| addr.as_address().to_string().to_lowercase())
             .collect();
 
         let mut hash: Option<String> = None;
@@ -1053,7 +1053,7 @@ impl Actor for SenderAccount {
                 .get_balance_for_sender(&sender_id)
                 .unwrap_or_default();
             async move {
-                let last_non_final_ravs: Vec<(AllocationId, BigDecimal)> =
+                let last_non_final_ravs: Vec<(CollectionId, BigDecimal)> =
                     if config.tap_mode.is_horizon() {
                         let rows: Vec<(String, BigDecimal)> = sqlx::query_as(
                             r#"
@@ -1075,7 +1075,7 @@ impl Actor for SenderAccount {
                         rows.into_iter()
                             .filter_map(|record| {
                                 let collection_id = CollectionId::from_str(&record.0).ok()?;
-                                Some((AllocationId(collection_id), record.1))
+                                Some((collection_id, record.1))
                             })
                             .collect()
                     } else {
@@ -1091,7 +1091,7 @@ impl Actor for SenderAccount {
 
                     let collection_ids: Vec<String> = last_non_final_ravs
                         .iter()
-                        .map(|(collection_id, _)| collection_id.address().to_string())
+                        .map(|(collection_id, _)| collection_id.as_address().to_string())
                         .collect();
 
                     if !collection_ids.is_empty() {
@@ -1118,16 +1118,16 @@ impl Actor for SenderAccount {
                                             .to_bigint()
                                             .and_then(|v| v.to_u128())
                                             .unwrap_or(0);
-                                        (collection_id.address().to_string(), value_u128)
+                                        (collection_id.as_address().to_string(), value_u128)
                                     })
                                     .collect();
 
                                 // Also create a reverse map from address to original collection_id
-                                let addr_to_collection: HashMap<String, &AllocationId> =
+                                let addr_to_collection: HashMap<String, &CollectionId> =
                                     last_non_final_ravs
                                         .iter()
                                         .map(|(collection_id, _)| {
-                                            (collection_id.address().to_string(), collection_id)
+                                            (collection_id.as_address().to_string(), collection_id)
                                         })
                                         .collect();
 
@@ -1237,7 +1237,7 @@ impl Actor for SenderAccount {
                 let non_redeemed_ravs = last_non_final_ravs
                     .into_iter()
                     .filter_map(|(allocation_id, value)| {
-                        let address = allocation_id.address(); // Use existing .address() method
+                        let address = allocation_id.as_address(); // Use existing .as_address() method
                         let value = value.to_bigint()?.to_u128()?;
                         Some((address, value))
                     })
@@ -1449,7 +1449,7 @@ impl Actor for SenderAccount {
 
                 state
                     .invalid_receipts_tracker
-                    .update(allocation_id.address(), unaggregated_fees.value);
+                    .update(allocation_id.as_address(), unaggregated_fees.value);
 
                 // invalid receipts can't go down
                 let should_deny = !state.denied && state.deny_condition_reached();
@@ -1466,14 +1466,14 @@ impl Actor for SenderAccount {
                 );
 
                 tracing::debug!(
-                    allocation_addr = %allocation_id.address(),
+                    allocation_addr = %allocation_id.as_address(),
                     "Checking fee tracker for allocation",
                 );
 
                 // Log the raw allocation ID details for comparison
                 tracing::debug!(
-                    collection_id = %allocation_id.0,
-                    as_address = %allocation_id.0.as_address(),
+                    collection_id = %allocation_id,
+                    as_address = %allocation_id.as_address(),
                     "Horizon allocation details"
                 );
                 let tracked_allocations: Vec<_> =
@@ -1486,7 +1486,7 @@ impl Actor for SenderAccount {
                 let has_allocation = state
                     .sender_fee_tracker
                     .id_to_fee
-                    .contains_key(&allocation_id.address());
+                    .contains_key(&allocation_id.as_address());
                 tracing::debug!(allocation_id = %allocation_id, has_allocation, "Allocation exists in fee tracker");
 
                 if !has_allocation {
@@ -1524,9 +1524,11 @@ impl Actor for SenderAccount {
                         }
 
                         // add new value
-                        state
-                            .sender_fee_tracker
-                            .add(allocation_id.address(), value, timestamp_ns);
+                        state.sender_fee_tracker.add(
+                            allocation_id.as_address(),
+                            value,
+                            timestamp_ns,
+                        );
 
                         SENDER_FEE_TRACKER
                             .with_label_values(&[&state.sender.to_string()])
@@ -1539,16 +1541,16 @@ impl Actor for SenderAccount {
                             .set(
                                 state
                                     .sender_fee_tracker
-                                    .get_total_fee_for_allocation(&allocation_id.address())
+                                    .get_total_fee_for_allocation(&allocation_id.as_address())
                                     .map(|fee| fee.value)
                                     .unwrap_or_default() as f64,
                             );
                     }
                     ReceiptFees::RavRequestResponse(fees, rav_result) => {
-                        state.finalize_rav_request(allocation_id.address(), (fees, rav_result));
+                        state.finalize_rav_request(allocation_id.as_address(), (fees, rav_result));
                     }
                     ReceiptFees::UpdateValue(unaggregated_fees) => {
-                        state.update_sender_fee(allocation_id.address(), unaggregated_fees);
+                        state.update_sender_fee(allocation_id.as_address(), unaggregated_fees);
                     }
                     ReceiptFees::Retry => {}
                 }
@@ -1566,10 +1568,10 @@ impl Actor for SenderAccount {
                     let total_fee_outside_buffer = state.sender_fee_tracker.get_ravable_total_fee();
                     let total_counter_for_allocation = state
                         .sender_fee_tracker
-                        .get_count_outside_buffer_for_allocation(&allocation_id.address());
+                        .get_count_outside_buffer_for_allocation(&allocation_id.as_address());
                     let can_trigger_rav = state
                         .sender_fee_tracker
-                        .can_trigger_rav(allocation_id.address());
+                        .can_trigger_rav(allocation_id.as_address());
                     let counter_greater_receipt_limit = total_counter_for_allocation
                         >= state.config.rav_request_receipt_limit
                         && can_trigger_rav;
@@ -1580,7 +1582,7 @@ impl Actor for SenderAccount {
                     let buffered_fee = total_fee.saturating_sub(total_fee_outside_buffer);
 
                     tracing::debug!(
-                        allocation_id = %allocation_id.address(),
+                        allocation_id = %allocation_id.as_address(),
                         total_fee = %total_fee,
                         total_fee_outside_buffer = %total_fee_outside_buffer,
                         buffered_fee = %buffered_fee,
@@ -1611,7 +1613,7 @@ impl Actor for SenderAccount {
                             "Total counter greater than the receipt limit per rav. Triggering RAV request"
                         );
                         state
-                            .rav_request_for_allocation(allocation_id.address())
+                            .rav_request_for_allocation(allocation_id.as_address())
                             .await
                     } else {
                         Ok(())
@@ -1693,16 +1695,16 @@ impl Actor for SenderAccount {
 
                 // Remove sender allocations
                 for allocation_id in possibly_closed_allocations {
-                    if really_closed.contains(&allocation_id.address()) {
+                    if really_closed.contains(&allocation_id.as_address()) {
                         if let Some(sender_handle) = ActorRef::<SenderAllocationMessage>::where_is(
-                            state.format_sender_allocation(&allocation_id.address()),
+                            state.format_sender_allocation(&allocation_id.as_address()),
                         ) {
                             tracing::trace!(%allocation_id, "SenderAccount shutting down SenderAllocation");
                             // we can not send a rav request to this allocation
                             // because it's gonna trigger the last rav
                             state
                                 .sender_fee_tracker
-                                .block_allocation_id(allocation_id.address());
+                                .block_allocation_id(allocation_id.as_address());
                             sender_handle.stop(None);
                             new_allocation_ids.remove(allocation_id);
                         }
@@ -1738,7 +1740,7 @@ impl Actor for SenderAccount {
                 let active_allocation_ids = state
                     .allocation_ids
                     .iter()
-                    .map(|id| id.address())
+                    .map(|id| id.as_address())
                     .collect::<HashSet<_>>()
                     .union(&non_final_last_ravs_set)
                     .cloned()
@@ -1787,7 +1789,7 @@ impl Actor for SenderAccount {
                 // Also trigger receipt reconciliation for currently tracked allocations.
                 for allocation_id in state.allocation_ids.iter() {
                     let sender_allocation_id =
-                        state.format_sender_allocation(&allocation_id.address());
+                        state.format_sender_allocation(&allocation_id.as_address());
                     if let Some(sender_allocation) =
                         ActorRef::<SenderAllocationMessage>::where_is(sender_allocation_id)
                     {
@@ -1892,7 +1894,7 @@ impl Actor for SenderAccount {
                 let allocation_enum = state
                     .allocation_ids
                     .iter()
-                    .find(|id| id.address() == allocation_id)
+                    .find(|id| id.as_address() == allocation_id)
                     .cloned()
                     .unwrap_or_else(|| {
                         // Allocation not found in state - this can happen in race conditions during
@@ -1901,7 +1903,7 @@ impl Actor for SenderAccount {
                             %allocation_id,
                             "Allocation not found in state for ActorTerminated, falling back to Horizon"
                         );
-                        AllocationId(CollectionId::from(allocation_id))
+                        CollectionId::from(allocation_id)
                     });
 
                 let _ = myself.cast(SenderAccountMessage::UpdateReceiptFees(
@@ -1933,7 +1935,7 @@ impl Actor for SenderAccount {
                 let Some(allocation_id) = state
                     .allocation_ids
                     .iter()
-                    .find(|id| id.address() == allocation_id)
+                    .find(|id| id.as_address() == allocation_id)
                 else {
                     tracing::error!(%allocation_id, "Could not get allocation id type from state");
                     return Ok(());
@@ -1973,7 +1975,7 @@ impl Actor for SenderAccount {
 
         // Clean up metrics for active allocations
         for allocation_id in &state.allocation_ids {
-            let allocation_label = allocation_id.address().to_string();
+            let allocation_label = allocation_id.as_address().to_string();
             let _ = UNAGGREGATED_FEES.remove_label_values(&[&sender_label, &allocation_label]);
             let _ = UNAGGREGATED_FEES_BY_VERSION.remove_label_values(&[
                 &sender_label,
@@ -2080,8 +2082,7 @@ pub mod tests {
     };
     use crate::{
         agent::{
-            sender_account::ReceiptFees, sender_accounts_manager::AllocationId,
-            sender_allocation::SenderAllocationMessage,
+            sender_account::ReceiptFees, sender_allocation::SenderAllocationMessage,
             unaggregated_receipts::UnaggregatedReceipts,
         },
         assert_not_triggered, assert_triggered,
@@ -2200,8 +2201,7 @@ pub mod tests {
             .call()
             .await;
 
-        let allocation_ids =
-            HashSet::from_iter([AllocationId(CollectionId::from(ALLOCATION_ID_0))]);
+        let allocation_ids = HashSet::from_iter([CollectionId::from(ALLOCATION_ID_0)]);
         // we expect it to create a sender allocation
         sender_account
             .cast(SenderAccountMessage::UpdateAllocationIds(
@@ -2321,8 +2321,8 @@ pub mod tests {
 
         // we expect it to create a sender allocation
         sender_account
-            .cast(SenderAccountMessage::NewAllocationId(AllocationId(
-                CollectionId::from(ALLOCATION_ID_0),
+            .cast(SenderAccountMessage::NewAllocationId(CollectionId::from(
+                ALLOCATION_ID_0,
             )))
             .unwrap();
 
@@ -2336,7 +2336,7 @@ pub mod tests {
         // nothing should change because we already created
         sender_account
             .cast(SenderAccountMessage::UpdateAllocationIds(
-                vec![AllocationId(CollectionId::from(ALLOCATION_ID_0))]
+                vec![CollectionId::from(ALLOCATION_ID_0)]
                     .into_iter()
                     .collect(),
             ))
@@ -2422,7 +2422,7 @@ pub mod tests {
         basic_sender_account
             .sender_account
             .cast(SenderAccountMessage::UpdateReceiptFees(
-                AllocationId(CollectionId::from(ALLOCATION_ID_0)),
+                CollectionId::from(ALLOCATION_ID_0),
                 ReceiptFees::NewReceipt(TRIGGER_VALUE - 1, get_current_timestamp_u64_ns()),
             ))
             .unwrap();
@@ -2456,7 +2456,7 @@ pub mod tests {
         basic_sender_account
             .sender_account
             .cast(SenderAccountMessage::UpdateReceiptFees(
-                AllocationId(CollectionId::from(ALLOCATION_ID_0)),
+                CollectionId::from(ALLOCATION_ID_0),
                 ReceiptFees::NewReceipt(TRIGGER_VALUE, get_current_timestamp_u64_ns()),
             ))
             .unwrap();
@@ -2470,7 +2470,7 @@ pub mod tests {
         basic_sender_account
             .sender_account
             .cast(SenderAccountMessage::UpdateReceiptFees(
-                AllocationId(CollectionId::from(ALLOCATION_ID_0)),
+                CollectionId::from(ALLOCATION_ID_0),
                 ReceiptFees::Retry,
             ))
             .unwrap();
@@ -2500,7 +2500,7 @@ pub mod tests {
 
         sender_account
             .cast(SenderAccountMessage::UpdateReceiptFees(
-                AllocationId(CollectionId::from(ALLOCATION_ID_0)),
+                CollectionId::from(ALLOCATION_ID_0),
                 ReceiptFees::NewReceipt(1, get_current_timestamp_u64_ns()),
             ))
             .unwrap();
@@ -2510,7 +2510,7 @@ pub mod tests {
 
         sender_account
             .cast(SenderAccountMessage::UpdateReceiptFees(
-                AllocationId(CollectionId::from(ALLOCATION_ID_0)),
+                CollectionId::from(ALLOCATION_ID_0),
                 ReceiptFees::NewReceipt(1, get_current_timestamp_u64_ns()),
             ))
             .unwrap();
@@ -2521,7 +2521,7 @@ pub mod tests {
 
         sender_account
             .cast(SenderAccountMessage::UpdateReceiptFees(
-                AllocationId(CollectionId::from(ALLOCATION_ID_0)),
+                CollectionId::from(ALLOCATION_ID_0),
                 ReceiptFees::Retry,
             ))
             .unwrap();
@@ -2539,7 +2539,7 @@ pub mod tests {
         let (sender_account, _, prefix, _, _, _) = create_sender_account()
             .pgpool(pgpool)
             .initial_allocation(
-                vec![AllocationId(CollectionId::from(ALLOCATION_ID_0))]
+                vec![CollectionId::from(ALLOCATION_ID_0)]
                     .into_iter()
                     .collect(),
             )
@@ -2644,7 +2644,7 @@ pub mod tests {
 
         sender_account
             .cast(SenderAccountMessage::UpdateReceiptFees(
-                AllocationId(CollectionId::from(ALLOCATION_ID_0)),
+                CollectionId::from(ALLOCATION_ID_0),
                 ReceiptFees::NewReceipt(TRIGGER_VALUE, get_current_timestamp_u64_ns()),
             ))
             .unwrap();
@@ -2690,7 +2690,7 @@ pub mod tests {
             ($value:expr) => {
                 sender_account
                     .cast(SenderAccountMessage::UpdateReceiptFees(
-                        AllocationId(CollectionId::from(ALLOCATION_ID_0)),
+                        CollectionId::from(ALLOCATION_ID_0),
                         ReceiptFees::UpdateValue(UnaggregatedReceipts {
                             value: $value,
                             last_id: 11,
@@ -2707,7 +2707,7 @@ pub mod tests {
             ($value:expr) => {
                 sender_account
                     .cast(SenderAccountMessage::UpdateInvalidReceiptFees(
-                        AllocationId(CollectionId::from(ALLOCATION_ID_0)),
+                        CollectionId::from(ALLOCATION_ID_0),
                         UnaggregatedReceipts {
                             value: $value,
                             last_id: 11,
@@ -2785,7 +2785,7 @@ pub mod tests {
             .unwrap();
 
         // Create sender_account with the allocation so it loads the RAV
-        let initial_allocation = HashSet::from([AllocationId(CollectionId::from(ALLOCATION_ID_0))]);
+        let initial_allocation = HashSet::from([CollectionId::from(ALLOCATION_ID_0)]);
         let (sender_account, _notify, _, _, _, _) = create_sender_account()
             .pgpool(pgpool.clone())
             .initial_allocation(initial_allocation)
@@ -2856,7 +2856,7 @@ pub mod tests {
             ($value:expr) => {
                 sender_account
                     .cast(SenderAccountMessage::UpdateReceiptFees(
-                        AllocationId(CollectionId::from(ALLOCATION_ID_0)),
+                        CollectionId::from(ALLOCATION_ID_0),
                         ReceiptFees::UpdateValue(UnaggregatedReceipts {
                             value: $value,
                             last_id: 11,
@@ -3093,7 +3093,7 @@ pub mod tests {
         // set retry
         sender_account
             .cast(SenderAccountMessage::UpdateReceiptFees(
-                AllocationId(CollectionId::from(ALLOCATION_ID_0)),
+                CollectionId::from(ALLOCATION_ID_0),
                 ReceiptFees::NewReceipt(TRIGGER_VALUE, get_current_timestamp_u64_ns()),
             ))
             .unwrap();
@@ -3101,7 +3101,7 @@ pub mod tests {
             matches!(
                 msg,
                 SenderAccountMessage::UpdateReceiptFees(
-                    AllocationId(collection_id),
+                    collection_id,
                     ReceiptFees::NewReceipt(TRIGGER_VALUE, _)
                 ) if *collection_id == CollectionId::from(ALLOCATION_ID_0)
             )
@@ -3145,8 +3145,8 @@ pub mod tests {
         let mock_escrow_subgraph = setup_mock_escrow_subgraph().await;
 
         let allocation_set = HashSet::from_iter([
-            AllocationId(CollectionId::from(ALLOCATION_ID_0)),
-            AllocationId(CollectionId::from(ALLOCATION_ID_1)),
+            CollectionId::from(ALLOCATION_ID_0),
+            CollectionId::from(ALLOCATION_ID_1),
         ]);
 
         let (sender_account, mut msg_receiver, _, _, indexer_allocations_tx, _) =
@@ -3189,8 +3189,7 @@ pub mod tests {
         }
 
         // Test that updating the watcher changes what ReconcileAllocations sends
-        let new_allocation_set =
-            HashSet::from_iter([AllocationId(CollectionId::from(ALLOCATION_ID_0))]);
+        let new_allocation_set = HashSet::from_iter([CollectionId::from(ALLOCATION_ID_0)]);
         indexer_allocations_tx
             .send(new_allocation_set.clone())
             .unwrap();
@@ -3292,8 +3291,7 @@ pub mod tests {
         let mock_escrow_subgraph = setup_mock_escrow_subgraph().await;
 
         // Start with one allocation
-        let initial_allocation_set =
-            HashSet::from_iter([AllocationId(CollectionId::from(ALLOCATION_ID_0))]);
+        let initial_allocation_set = HashSet::from_iter([CollectionId::from(ALLOCATION_ID_0)]);
 
         let (sender_account, mut msg_receiver, _, _, indexer_allocations_tx, _) =
             create_sender_account()
@@ -3311,7 +3309,7 @@ pub mod tests {
 
         // Simulate all allocations closing during connectivity outage:
         // update watcher to empty set
-        let empty_allocation_set: HashSet<AllocationId> = HashSet::new();
+        let empty_allocation_set: HashSet<CollectionId> = HashSet::new();
         indexer_allocations_tx
             .send(empty_allocation_set.clone())
             .unwrap();

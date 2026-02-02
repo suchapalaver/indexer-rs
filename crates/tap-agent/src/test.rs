@@ -23,10 +23,13 @@ use tap_aggregator::server::run_server;
 use tap_core::{signed_message::Eip712SignedMessage, tap_eip712_domain};
 use tap_graph::{ReceiptAggregateVoucher, SignedRav};
 use test_assets::{flush_messages, TAP_SENDER as SENDER, TAP_SIGNER as SIGNER};
-use thegraph_core::alloy::{
-    primitives::{hex::ToHexExt, Address, Bytes, FixedBytes, U256},
-    signers::local::{coins_bip39::English, MnemonicBuilder, PrivateKeySigner},
-    sol_types::Eip712Domain,
+use thegraph_core::{
+    alloy::{
+        primitives::{hex::ToHexExt, Address, Bytes, FixedBytes, U256},
+        signers::local::{coins_bip39::English, MnemonicBuilder, PrivateKeySigner},
+        sol_types::Eip712Domain,
+    },
+    CollectionId,
 };
 
 pub const ALLOCATION_ID_0: Address = test_assets::ALLOCATION_ID_0;
@@ -43,8 +46,8 @@ use crate::{
             SenderAccount, SenderAccountArgs, SenderAccountConfig, SenderAccountMessage,
         },
         sender_accounts_manager::{
-            AllocationId, ChannelReceiptNotification, SenderAccountsManager,
-            SenderAccountsManagerArgs, SenderAccountsManagerMessage, SenderType,
+            ChannelReceiptNotification, SenderAccountsManager, SenderAccountsManagerArgs,
+            SenderAccountsManagerMessage, SenderType,
         },
     },
     tap::{
@@ -108,7 +111,7 @@ pub fn get_sender_account_config() -> &'static SenderAccountConfig {
 #[bon::builder]
 pub async fn create_sender_account(
     pgpool: PgPool,
-    #[builder(default = HashSet::new())] initial_allocation: HashSet<AllocationId>,
+    #[builder(default = HashSet::new())] initial_allocation: HashSet<CollectionId>,
     #[builder(default = TRIGGER_VALUE)] rav_request_trigger_value: u128,
     #[builder(default = TRIGGER_VALUE)] max_amount_willing_to_lose_grt: u128,
     escrow_subgraph_endpoint: Option<&str>,
@@ -124,7 +127,7 @@ pub async fn create_sender_account(
     mpsc::Receiver<SenderAccountMessage>,
     String,
     Sender<EscrowAccounts>,
-    Sender<HashSet<AllocationId>>,
+    Sender<HashSet<CollectionId>>,
     Address,
 ) {
     let sender_id = sender_id.unwrap_or(SENDER.1);
@@ -720,7 +723,7 @@ pub mod actors {
 
     use crate::agent::{
         sender_account::{RavInformation, ReceiptFees, SenderAccountMessage},
-        sender_accounts_manager::{AllocationId, NewReceiptNotification},
+        sender_accounts_manager::NewReceiptNotification,
         sender_allocation::SenderAllocationMessage,
         unaggregated_receipts::UnaggregatedReceipts,
     };
@@ -955,7 +958,7 @@ pub mod actors {
                         // fees are cleared, which stops the retry mechanism as intended.
                         let current_value = *self.next_unaggregated_fees_value.borrow();
                         sender_account.cast(SenderAccountMessage::UpdateReceiptFees(
-                            AllocationId(CollectionId::from(ALLOCATION_ID_0)),
+                            CollectionId::from(ALLOCATION_ID_0),
                             ReceiptFees::RavRequestResponse(
                                 UnaggregatedReceipts {
                                     value: 0, // Clear unaggregated fees - they're now in the RAV

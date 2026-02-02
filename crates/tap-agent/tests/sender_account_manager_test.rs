@@ -7,7 +7,7 @@ use indexer_monitor::EscrowAccounts;
 use indexer_tap_agent::{
     agent::{
         sender_account::SenderAccountMessage,
-        sender_accounts_manager::{AllocationId, SenderAccountsManagerMessage},
+        sender_accounts_manager::SenderAccountsManagerMessage,
         sender_allocation::SenderAllocationMessage,
     },
     test::{
@@ -108,7 +108,7 @@ async fn sender_account_manager_layer_test() {
         .clone()
         .unwrap()
         .cast(SenderAccountMessage::UpdateAllocationIds(
-            vec![AllocationId(CollectionId::from(ALLOCATION_ID_0))]
+            vec![CollectionId::from(ALLOCATION_ID_0)]
                 .into_iter()
                 .collect(),
         ))
