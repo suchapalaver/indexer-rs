@@ -53,6 +53,10 @@ setup-integration-env:
 setup:
     START_PGADMIN=true ./setup-test-network.sh
 
+# Phase 4: Horizon-only local-network validation with unified binary
+phase4:
+    ./docs/phase-4-execution.sh
+
 # Stop all services
 down:
     cd contrib && docker compose -f docker-compose.yml down --remove-orphans
@@ -173,4 +177,3 @@ direct-ravs num_receipts="1000": setup-integration-env
     cd integration-tests && ./fund_escrow.sh
     # cd integration-tests && cargo run -- direct-service --num-receipts {{num_receipts}}
     cd integration-tests && cargo run -- direct-service
-
